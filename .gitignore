@@ -1,2 +1,5 @@
 /target
 *.pdb
+
+# アイコン生成スクリプトのプレビュー産物(再生成可能)
+scripts/_preview/

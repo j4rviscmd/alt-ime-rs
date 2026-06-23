@@ -21,10 +21,16 @@ windows-sys = { version = "0.59", features = [
     "Win32_Graphics_Gdi",
 ]}
 
+# ビルド時にアイコンリソースを exe へ埋め込む
+[build-dependencies]
+winres = "0.1"
+
 # 軽量な単一exe生成を狙う最適化
+# Constraint: README要件「軽量・高速」「exeでビルド&配布」より、配布バイナリの最小化を最優先する。各フラグはそのための意図的な組合せ。
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 strip = "symbols"
+# Why: 本ツールはパニック時の復帰ではなく即終了で十分(常駐プロセスが異常状態で居座るより、ユーザの再起動の方が安全)。panicハンドラとアンワインド_tableを削ってサイズを削減する。
 panic = "abort"

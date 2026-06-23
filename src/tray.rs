@@ -12,9 +12,8 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW, SetForegroundWindow,
-    TrackPopupMenu, HWND_MESSAGE, IDI_APPLICATION, MF_CHECKED, MF_SEPARATOR, MF_STRING,
-    MF_UNCHECKED, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
-    WNDCLASSEXW,
+    TrackPopupMenu, HWND_MESSAGE, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
+    TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
 use crate::{hook, startup, wide};
@@ -25,6 +24,12 @@ const WM_TRAYICON: u32 = WM_APP + 1;
 // コンテキストメニューの項目ID
 const IDM_AUTOSTART: usize = 1001;
 const IDM_EXIT: usize = 1002;
+
+/// windows_sys 0.59 が公開していない MAKEINTRESOURCEW マクロ相当。
+/// 整数リソースID を名前ではなく番号として解釈させるため、整数を LPCWSTR へキャストする。
+const fn makeintresource(w: u16) -> *const u16 {
+    w as usize as *const u16
+}
 
 /// トレイウィンドウを作成し、アイコンを登録する。失敗時はNone。
 pub unsafe fn create() -> Option<HWND> {
@@ -60,8 +65,8 @@ pub unsafe fn create() -> Option<HWND> {
         return None;
     }
 
-    // トレイアイコンを追加(標準アプリケーションアイコンを使用)
-    let icon = LoadIconW(core::ptr::null_mut(), IDI_APPLICATION);
+    // トレイアイコンを追加(exe に埋め込んだアイコンリソース ID=1 を使用)
+    let icon = LoadIconW(hinst, makeintresource(1));
     let mut nid: NOTIFYICONDATAW = core::mem::zeroed();
     nid.cbSize = core::mem::size_of::<NOTIFYICONDATAW>() as u32;
     nid.hWnd = hwnd;
