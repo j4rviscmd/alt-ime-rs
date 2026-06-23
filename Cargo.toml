@@ -1,0 +1,30 @@
+[package]
+name = "alt-ime-rs"
+# リリース時は release.sh がタイムスタンプで上書きする
+version = "0.1.0"
+edition = "2021"
+description = "左右のAltキーの空打ちでIMEのON/OFFを切り替えるWindows向け常駐ツール"
+license = "MIT"
+repository = "https://github.com/j4rviscmd/alt-ime-rs"
+
+[dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_Graphics_Gdi",
+]}
+
+# 軽量な単一exe生成を狙う最適化
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
