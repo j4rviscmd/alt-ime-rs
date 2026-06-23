@@ -5,6 +5,9 @@
 //! - Alt押下中に別キーを打つ(複合キー) → IME切替しない
 //! - メニューバーの活性化は抑制、タスクトレイに常駐する
 
+// Why: ダブルクリック起動時にコンソールウィンドウを開かないため GUI サブシステムを指定する。
+#![windows_subsystem = "windows"]
+
 mod hook;
 mod ime;
 mod startup;
