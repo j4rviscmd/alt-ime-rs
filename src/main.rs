@@ -15,6 +15,10 @@ mod tray;
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG};
 
+// フックコールバックからトレイウィンドウへ vk07 抑制注入を依頼するカスタムメッセージ。
+// Constraint: tray.rs の WM_APP 系(0x8000/0x8001)と衝突しない値。0x8002 を割り当てる。
+pub(crate) const WM_APP_SUPPRESS: u32 = 0x8002;
+
 fn main() {
     unsafe {
         // キーボードフックを設置
@@ -29,6 +33,10 @@ fn main() {
             hook::uninstall();
             std::process::exit(1);
         };
+
+        // フックコールバックが vk07 抑制注入を PostMessage する宛先を登録
+        // Why: install() より後、かつメッセージループ開始より前で登録する。install 前だとフックはまだ来ず、ループ開始後だと初回 Alt 押下の抑制要求が null 宛になり取りこぼされるため、この順序が必須。
+        hook::set_tray_hwnd(hwnd);
 
         // メッセージループ(WH_KEYBOARD_LL はメッセージポンプが必須)
         // Constraint: LLフックのコールバックはフック設置スレッドのメッセージキューへ配送される。そのため設置したスレッド(=メイン)でポンプを回し続ける必要がある。

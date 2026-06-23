@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WNDCLASSEXW,
 };
 
-use crate::{startup, wide};
+use crate::{hook, startup, wide};
 
 // カスタムメッセージ(トレイアイコンのコールバック)
 const WM_APP: u32 = 0x8000;
@@ -90,6 +90,12 @@ pub unsafe fn destroy(hwnd: HWND) {
 /// メッセージウィンドウのプロシージャ。
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
     match msg {
+        // フックコールバックからの非同期要求 → vk07 でメニュー抑制を注入
+        // Why: フックコールバック内で直接 SendInput すると vk07 が Alt 伝播より先に処理される。PostMessageW でメッセージキューへ非同期積みし、このハンドラをメッセージループ経由で呼ぶことで、CallNextHookEx(Alt伝播)の後に vk07 が注入される順序を保証する(詳細は hook.rs のモジュールdoc)。
+        crate::WM_APP_SUPPRESS => {
+            hook::suppress_menu();
+            0
+        }
         WM_TRAYICON => {
             // lParam の下位ワードがマウスメッセージ
             let mouse = (lparam & 0xFFFF) as u32;
