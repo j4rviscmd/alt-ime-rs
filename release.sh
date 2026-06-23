@@ -38,7 +38,7 @@ if printf '%s\n' "${EXISTING}" | grep -qx "${BASE_TAG}"; then
     TAG="${BASE_TAG}.${N}"
 fi
 
-ASSET="alt-ime-rs-${VERSION}-x86_64.exe"
+ASSET="alt-ime-rs.exe"
 
 echo "リリースバージョン: ${VERSION} (タグ: ${TAG})"
 
