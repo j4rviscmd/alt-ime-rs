@@ -3,7 +3,7 @@
 
 Windows向けアプリ。左右の`ALT`キーでIME ON/OFF切り替えを行う。Rust製で軽量・高速
 
-このプロジェクトでは <https://github.com/karakaram/alt-ime-ahk> のような機能をrustにて実現して、exe配布を行う
+このプロジェクトでは [alt-ime-ahk](https://github.com/karakaram/alt-ime-ahk) のような機能をrustにて実現して、exe配布を行う
 
 *連続的な空打ちでIMEロックされる問題をfix*
 
