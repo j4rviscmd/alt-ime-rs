@@ -28,8 +28,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-use crate::ime;
-
 // 仮想キーコード(左右Alt)。LLフックの vkCode で直接取得できる。
 const VK_LMENU: u32 = 0xA4;
 const VK_RMENU: u32 = 0xA5;
@@ -90,8 +88,9 @@ unsafe extern "system" fn low_level_proc(code: i32, wparam: usize, lparam: isize
                         request_suppress();
                     } else if up && LALT_CLEAN.swap(false, Ordering::SeqCst) {
                         // Why: 読み出しと同時にフラグを落とすことで、KeyUp〜IME切替の間に別キーが割り込んでも二重切替を防ぐ。単純な load+store だと判定後に状態が変わり得るため swap 一発でatomicに処理する。
-                        // 左Alt空打ち → IME OFF
-                        ime::set_on(false);
+                        // 左Alt空打ち → IME OFF をメインスレッドへ非同期依頼
+                        // Why: フックコールバック内で ime::set_on を同期的に呼ぶと、その中の SendMessageW(WM_IME_CONTROL) が IME 側スレッドの応答を待ってメインスレッドをブロックし、Alt KeyDown 時に投稿済みの WM_APP_SUPPRESS(vk07注入)が処理されず Alt KeyUp 伝播後にずれ込むため、PostMessage でコールバック外へ追い出す(WM_APP_SUPPRESS と同じパターン)。
+                        request_ime_toggle(false);
                     }
                 }
                 VK_RMENU => {
@@ -100,8 +99,8 @@ unsafe extern "system" fn low_level_proc(code: i32, wparam: usize, lparam: isize
                         request_suppress();
                     } else if up && RALT_CLEAN.swap(false, Ordering::SeqCst) {
                         // Why: 上記 LALT_CLEAN と同様、読み出しとリセットを swap 一発でatomicに行い二重切替を防ぐ。
-                        // 右Alt空打ち → IME ON
-                        ime::set_on(true);
+                        // 右Alt空打ち → IME ON をメインスレッドへ非同期依頼(request_ime_toggle の詳細は LAlt 側コメント参照)
+                        request_ime_toggle(true);
                     }
                 }
                 _ => {
@@ -127,6 +126,22 @@ unsafe fn request_suppress() {
     if !hwnd.is_null() {
         // Why: 失敗(キュー満杯等)時でもフックコールバック内でリトライ/ブロックは禁止されるため諦める。抑制漏れはメニューが一時的に出る程度の影響に留まる。
         let _ = PostMessageW(hwnd, crate::WM_APP_SUPPRESS, 0, 0);
+    }
+}
+
+/// IME 切替(ime::set_on)をメッセージループ側へ非同期で依頼する。
+/// Why: フックコールバック内で ime::set_on を呼ぶと、その中の SendMessageW(WM_IME_CONTROL)
+///   が IME 側スレッドの応答を待ってメインスレッドをブロックする。その間 PostMessageW 済みの
+///   WM_APP_SUPPRESS(vk07注入)が処理されず Alt KeyUp 伝播後にずれ込むため、コールバックからは
+///   依頼だけ投げて即リターンする(WM_APP_SUPPRESS と同じパターン)。
+unsafe fn request_ime_toggle(on: bool) {
+    let hwnd = TRAY_HWND.load(Ordering::SeqCst);
+    // Why: 起動直後など tray::create 完了前は HWND 未登録で null になる。この間は IME 切替を諦め、登録後の Alt 押下から有効化する(初回数発の切替漏れは許容、request_suppress と同じ方針)。
+    if !hwnd.is_null() {
+        // wParam: 0=IME OFF, 1=IME ON
+        let wparam: usize = if on { 1 } else { 0 };
+        // Why: 失敗(キュー満杯等)時でもフックコールバック内でリトライ/ブロックは禁止されるため諦める。切替漏れは影響限定(request_suppress と同じ方針)。
+        let _ = PostMessageW(hwnd, crate::WM_APP_IME_TOGGLE, wparam, 0);
     }
 }
 

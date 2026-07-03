@@ -19,6 +19,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW,
 // Constraint: tray.rs の WM_APP 系(0x8000/0x8001)と衝突しない値。0x8002 を割り当てる。
 pub(crate) const WM_APP_SUPPRESS: u32 = 0x8002;
 
+// フックコールバックからトレイウィンドウへ IME 切替を依頼するカスタムメッセージ。
+// Why: LLフックコールバック内で ime::set_on を呼ぶと SendMessageW(WM_IME_CONTROL) が IME 側スレッドの
+//   応答を待ってメインスレッドをブロックし、Alt KeyDown 時に投稿済みの WM_APP_SUPPRESS(vk07注入)が
+//   処理されず Alt KeyUp 伝播後にずれ込むため、PostMessage でコールバック外へ追い出す。
+// Constraint: WM_APP_SUPPRESS(0x8002) と衝突しない値。0x8003 を割り当てる。
+pub(crate) const WM_APP_IME_TOGGLE: u32 = 0x8003;
+
 fn main() {
     unsafe {
         // キーボードフックを設置
