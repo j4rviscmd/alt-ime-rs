@@ -2,7 +2,7 @@
 //!
 //! 不可視のメッセージ専用ウィンドウを作成し、Shell_NotifyIconW で
 //! トレイアイコンを登録する。右/左クリックでポップアップメニューを表示し、
-//! 「自動起動」の切替と「終了」を提供する。
+//! 「自動起動」の切替、「実行ファイルの場所を開く」、「アップデートの確認」、「終了」を提供する。
 
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -26,7 +26,9 @@ const WM_TRAYICON: u32 = WM_APP + 1;
 // コンテキストメニューの項目ID
 const IDM_AUTOSTART: usize = 1001;
 const IDM_EXIT: usize = 1002;
-const IDM_CHECKUPDATE: usize = 1003;
+const IDM_OPEN_LOCATION: usize = 1003;
+// Constraint: IDM_OPEN_LOCATION(1003) と衝突しない値。1004 を割り当てる。
+const IDM_CHECKUPDATE: usize = 1004;
 
 /// windows_sys 0.59 が公開していない MAKEINTRESOURCEW マクロ相当。
 /// 整数リソースID を名前ではなく番号として解釈させるため、整数を LPCWSTR へキャストする。
@@ -137,6 +139,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
                     toggle_autostart();
                     0
                 }
+                IDM_OPEN_LOCATION => {
+                    open_file_location();
+                    0
+                }
                 IDM_CHECKUPDATE => {
                     // 別スレッドでGitHub APIへ問い合わせ(メインスレッドをブロックしない)
                     update::check_async(hwnd, update::Trigger::Manual);
@@ -173,6 +179,12 @@ unsafe fn show_menu(hwnd: HWND) {
         MF_STRING | autostart_flag,
         IDM_AUTOSTART,
         wide("自動起動").as_ptr(),
+    );
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_OPEN_LOCATION,
+        wide("実行ファイルの場所を開く").as_ptr(),
     );
     AppendMenuW(
         menu,
@@ -280,6 +292,24 @@ unsafe fn open_releases_page() {
         wide("open").as_ptr(),
         wide(update::RELEASES_URL).as_ptr(),
         core::ptr::null(),
+        core::ptr::null(),
+        SW_SHOWNORMAL,
+    );
+}
+
+/// 実行ファイルの場所をエクスプローラで開く(exe を選択状態にする)。
+unsafe fn open_file_location() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => return,
+    };
+    // Constraint: explorer.exe の /select,"パス" 構文。引用符でパス全体を囲み、空白・特殊文字を含むパスでも1つの引数として解釈させる。
+    let params = format!("/select,\"{}\"", exe);
+    ShellExecuteW(
+        core::ptr::null_mut(),
+        wide("open").as_ptr(),
+        wide("explorer.exe").as_ptr(),
+        wide(&params).as_ptr(),
         core::ptr::null(),
         SW_SHOWNORMAL,
     );
