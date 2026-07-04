@@ -2,17 +2,18 @@
 //!
 //! 不可視のメッセージ専用ウィンドウを作成し、Shell_NotifyIconW で
 //! トレイアイコンを登録する。右/左クリックでポップアップメニューを表示し、
-//! 「自動起動」の切替と「終了」を提供する。
+//! 「自動起動」の切替、「実行ファイルの場所を開く」、「終了」を提供する。
 
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+    NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW, SetForegroundWindow,
-    TrackPopupMenu, HWND_MESSAGE, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
+    TrackPopupMenu, HWND_MESSAGE, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SW_SHOWNORMAL,
     TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
@@ -24,6 +25,7 @@ const WM_TRAYICON: u32 = WM_APP + 1;
 // コンテキストメニューの項目ID
 const IDM_AUTOSTART: usize = 1001;
 const IDM_EXIT: usize = 1002;
+const IDM_OPEN_LOCATION: usize = 1003;
 
 /// windows_sys 0.59 が公開していない MAKEINTRESOURCEW マクロ相当。
 /// 整数リソースID を名前ではなく番号として解釈させるため、整数を LPCWSTR へキャストする。
@@ -127,6 +129,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
                     toggle_autostart();
                     0
                 }
+                IDM_OPEN_LOCATION => {
+                    open_file_location();
+                    0
+                }
                 IDM_EXIT => {
                     DestroyWindow(hwnd);
                     0
@@ -159,6 +165,12 @@ unsafe fn show_menu(hwnd: HWND) {
         IDM_AUTOSTART,
         wide("自動起動").as_ptr(),
     );
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_OPEN_LOCATION,
+        wide("実行ファイルの場所を開く").as_ptr(),
+    );
     AppendMenuW(menu, MF_SEPARATOR, 0, core::ptr::null());
     AppendMenuW(menu, MF_STRING, IDM_EXIT, wide("終了").as_ptr());
 
@@ -187,6 +199,24 @@ unsafe fn toggle_autostart() {
     } else {
         startup::enable();
     }
+}
+
+/// 実行ファイルの場所をエクスプローラで開く(exe を選択状態にする)。
+unsafe fn open_file_location() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => return,
+    };
+    // Constraint: explorer.exe の /select,"パス" 構文。引用符でパス全体を囲み、空白・特殊文字を含むパスでも1つの引数として解釈させる。
+    let params = format!("/select,\"{}\"", exe);
+    ShellExecuteW(
+        core::ptr::null_mut(),
+        wide("open").as_ptr(),
+        wide("explorer.exe").as_ptr(),
+        wide(&params).as_ptr(),
+        core::ptr::null(),
+        SW_SHOWNORMAL,
+    );
 }
 
 /// NOTIFYICONDATAW.szTip (UTF-16配列) にチップ文字列を設定する。
