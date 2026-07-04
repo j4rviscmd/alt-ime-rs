@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
-use crate::{hook, startup, wide};
+use crate::{hook, ime, startup, wide};
 
 // カスタムメッセージ(トレイアイコンのコールバック)
 const WM_APP: u32 = 0x8000;
@@ -101,6 +101,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
         // Why: フックコールバック内で直接 SendInput すると vk07 が Alt 伝播より先に処理される。PostMessageW でメッセージキューへ非同期積みし、このハンドラをメッセージループ経由で呼ぶことで、CallNextHookEx(Alt伝播)の後に vk07 が注入される順序を保証する(詳細は hook.rs のモジュールdoc)。
         crate::WM_APP_SUPPRESS => {
             hook::suppress_menu();
+            0
+        }
+        // フックコールバックからの非同期要求 → IME 切替(ime::set_on)
+        // Why: フックコールバック内で ime::set_on を呼ぶと SendMessageW(WM_IME_CONTROL) が IME 側スレッドの
+        //   応答を待ってメインスレッドをブロックし、Alt KeyDown 時に投稿済みの WM_APP_SUPPRESS(vk07注入)が
+        //   処理されず Alt KeyUp 伝播後にずれ込むため、PostMessageW でメッセージキューへ非同期積みし、この
+        //   ハンドラをメッセージループ経由で呼ぶことでブロック影響を LL コールバック外へ局所化する(詳細は hook.rs のモジュールdoc)。
+        crate::WM_APP_IME_TOGGLE => {
+            // wParam: 0=IME OFF, 1=IME ON
+            let on = wparam != 0;
+            ime::set_on(on);
             0
         }
         WM_TRAYICON => {
