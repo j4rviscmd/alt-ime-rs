@@ -2,7 +2,7 @@
 //!
 //! 不可視のメッセージ専用ウィンドウを作成し、Shell_NotifyIconW で
 //! トレイアイコンを登録する。右/左クリックでポップアップメニューを表示し、
-//! 「自動起動」の切替、「実行ファイルの場所を開く」、「終了」を提供する。
+//! 「自動起動」の切替、「実行ファイルの場所を開く」、「アップデートの確認」、「終了」を提供する。
 
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -12,12 +12,13 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    GetCursorPos, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassExW, SetForegroundWindow,
-    TrackPopupMenu, HWND_MESSAGE, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SW_SHOWNORMAL,
+    GetCursorPos, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SetForegroundWindow, TrackPopupMenu, HWND_MESSAGE, IDYES, MB_ICONINFORMATION, MB_ICONWARNING,
+    MB_OK, MB_YESNO, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SW_SHOWNORMAL,
     TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
-use crate::{hook, ime, startup, wide};
+use crate::{hook, ime, startup, update, wide};
 
 // カスタムメッセージ(トレイアイコンのコールバック)
 const WM_APP: u32 = 0x8000;
@@ -26,6 +27,8 @@ const WM_TRAYICON: u32 = WM_APP + 1;
 const IDM_AUTOSTART: usize = 1001;
 const IDM_EXIT: usize = 1002;
 const IDM_OPEN_LOCATION: usize = 1003;
+// Constraint: IDM_OPEN_LOCATION(1003) と衝突しない値。1004 を割り当てる。
+const IDM_CHECKUPDATE: usize = 1004;
 
 /// windows_sys 0.59 が公開していない MAKEINTRESOURCEW マクロ相当。
 /// 整数リソースID を名前ではなく番号として解釈させるため、整数を LPCWSTR へキャストする。
@@ -114,6 +117,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
             ime::set_on(on);
             0
         }
+        // アップデート確認スレッドからの結果受領 → トリガ/結果に応じてダイアログ表示
+        // Why: 通信は別スレッドで行い、MessageBox はメインスレッドで出す。PostMessage の
+        //   lparam に Box<CheckResult> の生ポインタを載せて受け渡す(同パターンは WM_APP_* 系)。
+        crate::WM_APP_UPDATE_RESULT => {
+            handle_update_result(lparam);
+            0
+        }
         WM_TRAYICON => {
             // lParam の下位ワードがマウスメッセージ
             let mouse = (lparam & 0xFFFF) as u32;
@@ -131,6 +141,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
                 }
                 IDM_OPEN_LOCATION => {
                     open_file_location();
+                    0
+                }
+                IDM_CHECKUPDATE => {
+                    // 別スレッドでGitHub APIへ問い合わせ(メインスレッドをブロックしない)
+                    update::check_async(hwnd, update::Trigger::Manual);
                     0
                 }
                 IDM_EXIT => {
@@ -171,6 +186,12 @@ unsafe fn show_menu(hwnd: HWND) {
         IDM_OPEN_LOCATION,
         wide("実行ファイルの場所を開く").as_ptr(),
     );
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_CHECKUPDATE,
+        wide("アップデートを確認する").as_ptr(),
+    );
     AppendMenuW(menu, MF_SEPARATOR, 0, core::ptr::null());
     AppendMenuW(menu, MF_STRING, IDM_EXIT, wide("終了").as_ptr());
 
@@ -199,6 +220,81 @@ unsafe fn toggle_autostart() {
     } else {
         startup::enable();
     }
+}
+
+/// アップデート確認の結果(lparam に Box<CheckResult> の生ポインタ)を受け取り、
+/// トリガと結果に応じたダイアログを表示する。
+unsafe fn handle_update_result(lparam: isize) {
+    if lparam == 0 {
+        return;
+    }
+    // 生ポインタから Box を再構築し、所有権を受け取って解放する
+    let update::CheckResult { trigger, outcome } =
+        *Box::from_raw(lparam as *mut update::CheckResult);
+    show_update_dialog(trigger, outcome);
+}
+
+/// トリガと結果に応じてダイアログを表示する。
+unsafe fn show_update_dialog(trigger: update::Trigger, outcome: update::Outcome) {
+    // 起動時(Startup)は「更新あり」の時だけ表示。最新時・失敗時は静かに抜ける。
+    // Why: 起動のたびにMessageBoxが出るのはユーザ体験を損ねるため、必要最小限(更新あり)に抑える。
+    let silent_unless_update = matches!(trigger, update::Trigger::Startup);
+    match outcome {
+        update::Outcome::UpdateAvailable(latest) => {
+            let msg = format!(
+                "新しいバージョンがあります。\n\n現在: v{}\n最新: {}\n\n配布ページを開きますか？",
+                update::APP_VERSION,
+                latest
+            );
+            let rc = MessageBoxW(
+                core::ptr::null_mut(),
+                wide(&msg).as_ptr(),
+                wide("アップデート").as_ptr(),
+                MB_YESNO | MB_ICONINFORMATION,
+            );
+            if rc == IDYES as i32 {
+                open_releases_page();
+            }
+        }
+        update::Outcome::UpToDate(latest) => {
+            if !silent_unless_update {
+                let msg = format!("最新のバージョンを使用しています。\n({})", latest);
+                MessageBoxW(
+                    core::ptr::null_mut(),
+                    wide(&msg).as_ptr(),
+                    wide("アップデート").as_ptr(),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+        }
+        update::Outcome::Failed => {
+            if !silent_unless_update {
+                let rc = MessageBoxW(
+                    core::ptr::null_mut(),
+                    wide("アップデートの確認に失敗しました。\nネットワーク環境を確認し、配布ページを開きますか？")
+                        .as_ptr(),
+                    wide("アップデート").as_ptr(),
+                    MB_YESNO | MB_ICONWARNING,
+                );
+                if rc == IDYES as i32 {
+                    open_releases_page();
+                }
+            }
+        }
+    }
+}
+
+/// 既定ブラウザで配布ページ(Releases/latest)を開く。
+unsafe fn open_releases_page() {
+    // Why: DL・実行はユーザ任せ(実行中exeの置換問題を避け、ブラウザで案内するだけに留める)。
+    let _ = ShellExecuteW(
+        core::ptr::null_mut(),
+        wide("open").as_ptr(),
+        wide(update::RELEASES_URL).as_ptr(),
+        core::ptr::null(),
+        core::ptr::null(),
+        SW_SHOWNORMAL,
+    );
 }
 
 /// 実行ファイルの場所をエクスプローラで開く(exe を選択状態にする)。
