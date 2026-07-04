@@ -13,4 +13,14 @@ fn main() {
         //   ローカル(Windows+MSVC)では成功し、アイコンが埋め込まれる。
         println!("cargo:warning=アイコンリソースのコンパイルに失敗しました(ビルドは続行): {e}");
     }
+
+    // バージョンをバイナリへ焼き込む(アップデート確認機能が現在版として使用)。
+    // Why: release.sh が環境変数 ALT_IME_VERSION に日付版(例: 2026.07.04)を設定する。
+    //   未設定の通常 cargo build では Cargo.toml の version(0.1.0) にフォールバックし、
+    //   比較ロジックが常に成立するようにする。
+    println!("cargo:rerun-if-env-changed=ALT_IME_VERSION");
+    let version = std::env::var("ALT_IME_VERSION")
+        .or_else(|_| std::env::var("CARGO_PKG_VERSION"))
+        .unwrap_or_else(|_| "0.0.0".to_string());
+    println!("cargo:rustc-env=ALT_IME_VERSION={}", version);
 }

@@ -42,6 +42,10 @@ ASSET="alt-ime-rs.exe"
 
 echo "リリースバージョン: ${VERSION} (タグ: ${TAG})"
 
+# バージョンをバイナリへ焼き込む(アップデート確認機能が現在版として使用)
+# Why: 焼き込まないと exe は常に Cargo.toml の 0.1.0 を報告し、最新版との比較が成立しないため。
+export ALT_IME_VERSION="${VERSION}"
+
 # release ビルド
 cargo build --release
 
