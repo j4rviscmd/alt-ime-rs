@@ -16,21 +16,17 @@ mod update;
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG};
 
-// フックコールバックからトレイウィンドウへ vk07 抑制注入を依頼するカスタムメッセージ。
-// Constraint: tray.rs の WM_APP 系(0x8000/0x8001)と衝突しない値。0x8002 を割り当てる。
-pub(crate) const WM_APP_SUPPRESS: u32 = 0x8002;
-
 // フックコールバックからトレイウィンドウへ IME 切替を依頼するカスタムメッセージ。
 // Why: LLフックコールバック内で ime::set_on を呼ぶと SendMessageW(WM_IME_CONTROL) が IME 側スレッドの
-//   応答を待ってメインスレッドをブロックし、Alt KeyDown 時に投稿済みの WM_APP_SUPPRESS(vk07注入)が
-//   処理されず Alt KeyUp 伝播後にずれ込むため、PostMessage でコールバック外へ追い出す。
-// Constraint: WM_APP_SUPPRESS(0x8002) と衝突しない値。0x8003 を割り当てる。
+//   応答を待ってメインスレッドをブロックする。LLフックは LowLevelHooksTimeout(規定300ms) を超えると
+//   OSに無効化されるリスクがあるため、PostMessage でコールバック外へ追い出す。
+// Constraint: tray.rs の WM_APP 系(0x8000〜0x8001)と衝突しない値。0x8003 を割り当てる。
 pub(crate) const WM_APP_IME_TOGGLE: u32 = 0x8003;
 
 // アップデート確認スレッドからトレイウィンドウへ結果を受け渡すカスタムメッセージ。
 // Why: 通信は別スレッドで行い、UI(MessageBox)はメインスレッドで出すため、PostMessage で
-//   結果をメインスレッドへ受け渡す(WM_APP_SUPPRESS / WM_APP_IME_TOGGLE と同じパターン)。
-// Constraint: 既存の WM_APP 系(0x8000〜0x8003)と衝突しない値。0x8004 を割り当てる。
+//   結果をメインスレッドへ受け渡す(WM_APP_IME_TOGGLE と同じパターン)。
+// Constraint: 既存の WM_APP 系(0x8000〜0x8001, 0x8003)と衝突しない値。0x8004 を割り当てる。
 pub(crate) const WM_APP_UPDATE_RESULT: u32 = 0x8004;
 
 fn main() {
@@ -48,8 +44,12 @@ fn main() {
             std::process::exit(1);
         };
 
-        // フックコールバックが vk07 抑制注入を PostMessage する宛先を登録
-        // Why: install() より後、かつメッセージループ開始より前で登録する。install 前だとフックはまだ来ず、ループ開始後だと初回 Alt 押下の抑制要求が null 宛になり取りこぼされるため、この順序が必須。
+        // vk07 抑制注入を行う専用スレッドを起動
+        // Why: install() の後(フック設置後)で起動する。LLフックが Alt を検知した際に SetEvent で即座に起床させるため、メッセージループ開始前から待機状態にしておく。
+        hook::start_suppress_thread();
+
+        // フックコールバックが IME 切替を PostMessage する宛先を登録
+        // Why: install() より後、かつメッセージループ開始より前で登録する。install 前だとフックはまだ来ず、ループ開始後だと初回 Alt 空打ちの切替要求が null 宛になり取りこぼされるため、この順序が必須。
         hook::set_tray_hwnd(hwnd);
 
         // 起動時のアップデート確認を非同期で開始
