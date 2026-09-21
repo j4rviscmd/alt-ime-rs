@@ -104,7 +104,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
         // Why: フックコールバック内で ime::set_on を呼ぶと SendMessageW(WM_IME_CONTROL) が IME 側スレッドの
         //   応答を待ってメインスレッドをブロックする。LLフックは LowLevelHooksTimeout(規定300ms) を超えると
         //   OSに無効化されるリスクがあるため、PostMessageW でメッセージキューへ非同期積みし、このハンドラを
-        //   メッセージループ経由で呼ぶことでブロック影響を LL コールバック外へ局所化する(vk07抑制の同期化とは独立に必要)。
+        //   メッセージループ経由で呼ぶことでブロック影響を LL コールバック外へ局所化する(F13抑制の同期化とは独立に必要)。
         crate::WM_APP_IME_TOGGLE => {
             // wParam: 0=IME OFF, 1=IME ON
             let on = wparam != 0;
