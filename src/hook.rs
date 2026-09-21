@@ -6,20 +6,37 @@
 //! - AltのKeyUpでフラグがtrueのまま(=空打ち)ならIMEを切替える。
 //!
 //! また、Alt押下でメニューバーがアクティブになる問題を、参照元(AHK)と同様に
-//! 未割当キー(0x07)の入力を注入してキャンセルする。
+//! 抑制キー(F13)の入力を注入してキャンセルする。
 //!
-//! Why vk07注入を別スレッド + Event 駆動で行うか:
-//! - 参照元 AHK の *~LAlt::Send {Blind}{vk07} はホットキー発火で即座に vk07 を送る。
+//! Why F13か(参照元 AHK の vk07 から変更):
+//! - Alt押下中に非Altキーを1発打てばWin32メニュー活性化はキャンセルできる。参照元は
+//!   未割当キー vk07 でこれを行うが、Chrome 等のブラウザは vk07 をDOMイベントとして
+//!   ページへ表面化しないため、Web版Excel(Office on the web)のJSレベルの「Alt単押し」
+//!   検知(KeyTips表示)を打ち消せない。
+//! - F13(VK 0x7C)は実際のキーボードに存在しないLegacyキーで、DOM keydown/keyup
+//!   (Chrome実測 keyCode 124)としてページへ配信される。Excel webは「Alt押下中に別キーがあった
+//!   =複合キー」と認識しKeyTipsを出さなくなる。Win32メニュー抑制も同一仕組みで効く。
+//!   代償として F13 に割当のあるアプリ(実用上稀)では空打ち時にゴーストF13が見える。
+//!   また自己注入F13と実F13を区別しないため、Alt押下中に物理F13を打っても空打ち判定は
+//!   解除されない(LLKHF_INJECTED判定は行わない設計)。
+//! - F13はAltのKeyDown時と空打ち確定のKeyUp時の2箇所で注入する。KeyDown時の注入は
+//!   注入イベントが物理Alt KeyDownの配送に先行してしまうためWebアプリには「Altより前の
+//!   キー」として届き複合キー扱いされない(メニュー抑制には効く)。KeyUp時の注入は配信中の
+//!   Alt KeyUpより先行して「Alt押下中のキー」として届くため、WebアプリのAlt単押し判定を
+//!   確実に打ち消せる(CDP計測による順序検証済み)。
+//!
+//! Why F13注入を別スレッド + Event 駆動で行うか:
+//! - 参照元 AHK の *~LAlt::Send {Blind}{vk07} はホットキー発火で即座に注入キーを送る。
 //!   ホットキーは LLフックプロシージャとは別の専用スレッドで動き、そこから SendInput する。
-//! - LLフックプロシージャ内で SendInput すると vk07 が Alt と同一スタックで処理され
+//! - LLフックプロシージャ内で SendInput すると注入キーが Alt と同一スタックで処理され
 //!   抑制が効かなくなる(初版 f7bc0c8、順序制御でも解決せず案A で実証)。
 //! - PostMessage 経由(ea129c4)だと機能はするが、メッセージポンプのサイクル待ちが
-//!   レイテンシとなり、早い Alt+Space 操作で vk07 が Space 押下より後にずれ込んで
+//!   レイテンシとなり、早い Alt+Space 操作で注入が Space 押下より後にずれ込んで
 //!   システムメニューが開く(本セッション修正の直接原因)。
-//! - そこで vk07 注入だけを担う専用スレッドを立ち上げ、LLフックからは SetEvent で
+//! - そこで F13 注入だけを担う専用スレッドを立ち上げ、LLフックからは SetEvent で
 //!   即座に起床させる(参照元 AHK のホットキースレッドと同アーキテクチャ)。SetEvent は
 //!   カーネルオブジェクトのシグナル操作でナノ秒オーダー、かつ別スタックで SendInput
-//!   されるため vk07 は独立した入力として処理され、抑制が効きつつレイテンシも最小化する。
+//!   されるため F13 は独立した入力として処理され、抑制が効きつつレイテンシも最小化する。
 
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::thread;
@@ -40,10 +57,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 // 仮想キーコード(左右Alt)。LLフックの vkCode で直接取得できる。
 const VK_LMENU: u32 = 0xA4;
 const VK_RMENU: u32 = 0xA5;
-// メニュー抑制用の未割当キー(AHKのvk07相当)。
+// メニュー/Webアプリ抑制用のキー(AHKのvk07相当をF13へ変更)。
 // SendInputの再帰フックを無視するため特別扱いする。
-// Constraint: 0x07 はWindows仮想キーコード表の未定義領域。アプリへ入力として伝わらずメニュー活性化だけ打ち消せるため参照元(karakaram/alt-ime-ahk)と同一選択。
-const VK_SUPPRESS: u32 = 0x07;
+// Constraint: 0x7C (F13) は実際のキーボードに存在しないがDOMイベントとしては配信されるキー。
+//   Win32メニュー活性化のキャンセルと、Web版ExcelのKeyTips抑制(複合キー偽装)を1つの注入で兼ねる。
+const VK_SUPPRESS: u32 = 0x7C;
 
 // 空打ち判定状態。Alt押下時にtrue、押下中に別キーが打たれたらfalse。
 static LALT_CLEAN: AtomicBool = AtomicBool::new(false);
@@ -52,7 +70,7 @@ static RALT_CLEAN: AtomicBool = AtomicBool::new(false);
 static HHOOK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 // IME 切替要求の PostMessage 先。main がトレイウィンドウ生成後に登録する。
 static TRAY_HWND: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
-// vk07 抑制注入スレッドの起床用 Event。start_suppress_thread が生成後に登録する。
+// F13 抑制注入スレッドの起床用 Event。start_suppress_thread が生成後に登録する。
 static SUPPRESS_EVENT: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 
 /// キーボードフックをインストールする。失敗時はfalse。
@@ -79,9 +97,9 @@ pub unsafe fn set_tray_hwnd(hwnd: HWND) {
     TRAY_HWND.store(hwnd, Ordering::SeqCst);
 }
 
-/// vk07 抑制注入だけを担う専用スレッドを起動する。
-/// Why: LLフックプロシージャ内で SendInput すると vk07 が Alt と同一スタックで処理され
-///   抑制が効かなくなる(初版 f7bc0c8、順序制御でも解決せず)。そこで vk07 注入専用の別
+/// F13 抑制注入だけを担う専用スレッドを起動する。
+/// Why: LLフックプロシージャ内で SendInput すると F13 が Alt と同一スタックで処理され
+///   抑制が効かなくなる(初版 f7bc0c8、順序制御でも解決せず)。そこで F13 注入専用の別
 ///   スレッドを立ち上げ、LLフックからは SetEvent で即座に起床させる(参照元 AHK の
 ///   ホットキースレッドと同アーキテクチャ)。詳細はモジュールdoc参照。
 pub unsafe fn start_suppress_thread() {
@@ -114,7 +132,7 @@ unsafe extern "system" fn low_level_proc(code: i32, wparam: usize, lparam: isize
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
 
         // 抑制用キー自身は無視(SendInputの再帰呼出で空打ち判定を壊さないため)
-        // Why: vk07 を SendInput で注入すると本フックへ再帰的に流入する。ここを通過させると「Alt以外のキー」扱いされて空打ちフラグが即falseに落ち、IME切替が発火しなくなるため除外が必要(commit f7bc0c8)。
+        // Why: F13 を SendInput で注入すると本フックへ再帰的に流入する。ここを通過させると「Alt以外のキー」扱いされて空打ちフラグが即falseに落ち、IME切替が発火しなくなるため除外が必要(commit f7bc0c8)。
         if kb.vkCode != VK_SUPPRESS {
             // Constraint: Alt押下中はシステムが WM_SYSKEYDOWN/UP を発行する。WM_KEY* 系だけだと Alt 単独打鍵を取りこぼすため、両系統を OR で網羅する必要がある(MSDN WM_SYSKEYDOWN 仕様)。
             let down = wparam == WM_KEYDOWN as usize || wparam == WM_SYSKEYDOWN as usize;
@@ -124,13 +142,19 @@ unsafe extern "system" fn low_level_proc(code: i32, wparam: usize, lparam: isize
                 VK_LMENU => {
                     if down {
                         LALT_CLEAN.store(true, Ordering::SeqCst);
-                        // Why: vk07 抑制は別スレッドへ SetEvent で即座に依頼する。本コールバックは最後の CallNextHookEx で Alt を伝播して抜ける(詳細はモジュールdoc)。
+                        // Why: F13 抑制は別スレッドへ SetEvent で即座に依頼する。本コールバックは最後の CallNextHookEx で Alt を伝播して抜ける(詳細はモジュールdoc)。
                         request_suppress();
                     } else if up && LALT_CLEAN.swap(false, Ordering::SeqCst) {
                         // Why: 読み出しと同時にフラグを落とすことで、KeyUp〜IME切替の間に別キーが割り込んでも二重切替を防ぐ。単純な load+store だと判定後に状態が変わり得るため swap 一発でatomicに処理する。
                         // 左Alt空打ち → IME OFF をメインスレッドへ非同期依頼
-                        // Why: フックコールバック内で ime::set_on を同期的に呼ぶと、その中の SendMessageW(WM_IME_CONTROL) が IME 側スレッドの応答を待ってメインスレッドをブロックし、Alt KeyDown 時に投稿済みの WM_APP_SUPPRESS(vk07注入)が処理されず Alt KeyUp 伝播後にずれ込むため、PostMessage でコールバック外へ追い出す(WM_APP_SUPPRESS と同じパターン)。
+                        // Why: フックコールバック内で ime::set_on を同期的に呼ぶと、その中の SendMessageW(WM_IME_CONTROL) が IME 側スレッドの応答を待ってメインスレッドをブロックし、フック設置スレッドが止まって抑制注入の配送まで遅れるため、PostMessage でコールバック外へ追い出す。
                         request_ime_toggle(false);
+                        // Why: 空打ち確定の KeyUp 時にも F13 を注入する。KeyDown 時の注入は物理 Alt KeyDown の配送より
+                        // 先に割り込んでしまうためページには「Alt より前の F13」として届き、Webアプリは複合キーと
+                        // 認識しない(Excel web の KeyTips が出る)。KeyUp コールバック中に注入すれば F13 は配信中の
+                        // Alt KeyUp より先に割り込み「Alt 押下中の F13」として届くため、Webアプリが Alt 単押しと
+                        // 誤判定するのを確実に打ち消せる(CDP計測: Alt↓…F13↓↑…Alt↑ の順で KeyTips 抑制を確認)。
+                        request_suppress();
                     }
                 }
                 VK_RMENU => {
@@ -142,6 +166,8 @@ unsafe extern "system" fn low_level_proc(code: i32, wparam: usize, lparam: isize
                         // Why: 上記 LALT_CLEAN と同様、読み出しとリセットを swap 一発でatomicに行い二重切替を防ぐ。
                         // 右Alt空打ち → IME ON をメインスレッドへ非同期依頼(request_ime_toggle の詳細は LAlt 側コメント参照)
                         request_ime_toggle(true);
+                        // Why: LALT_CLEAN の KeyUp ブロックと同一(空打ち確定時の F13 注入で Webアプリの Alt 単押し誤判定を打ち消す)。
+                        request_suppress();
                     }
                 }
                 _ => {
@@ -158,7 +184,7 @@ unsafe extern "system" fn low_level_proc(code: i32, wparam: usize, lparam: isize
     CallNextHookEx(core::ptr::null_mut(), code, wparam, lparam)
 }
 
-/// vk07 抑制注入を専用スレッドへ即座に依頼する。
+/// F13 抑制注入を専用スレッドへ即座に依頼する。
 /// Why: SetEvent はカーネルオブジェクトのシグナル操作でナノ秒オーダー。PostMessage の
 ///   メッセージポンプサイクルを経由せず、LLフックプロシージャをブロックしない。
 unsafe fn request_suppress() {
@@ -174,7 +200,7 @@ unsafe fn request_suppress() {
 /// Why: フックコールバック内で ime::set_on を呼ぶと、その中の SendMessageW(WM_IME_CONTROL)
 ///   が IME 側スレッドの応答を待ってメインスレッドをブロックする。LLフックは
 ///   LowLevelHooksTimeout(規定300ms) を超えるとOSに無効化されるリスクがあるため、コールバック
-///   からは依頼だけ PostMessage で投げて即リターンする(vk07抑制の別スレッド化とは独立に必要)。
+///   からは依頼だけ PostMessage で投げて即リターンする(F13抑制の別スレッド化とは独立に必要)。
 unsafe fn request_ime_toggle(on: bool) {
     let hwnd = TRAY_HWND.load(Ordering::SeqCst);
     // Why: 起動直後など tray::create 完了前は HWND 未登録で null になる。この間は IME 切替を諦め、登録後の Alt 押下から有効化する(初回数発の切替漏れは許容)。
@@ -186,8 +212,8 @@ unsafe fn request_ime_toggle(on: bool) {
     }
 }
 
-/// Alt押下でメニューバーがアクティブになるのを防ぐため、未割当キーを注入する。
-/// start_suppress_thread で起動した vk07 注入専用スレッドから呼ばれる。
+/// Alt押下でメニューバー/Webアプリ(Excel webのKeyTips等)がアクティブになるのを防ぐため、
+/// F13を注入する。start_suppress_thread で起動した F13 注入専用スレッドから呼ばれる。
 unsafe fn suppress_menu() {
     // Why: メニュー活性化を確実にキャンセルするには押下/解放の完全な対が必要。downのみ残すと未解放状態が残るためupまで注入。
     let mut inputs: [INPUT; 2] = [core::mem::zeroed(); 2];

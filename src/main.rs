@@ -44,7 +44,7 @@ fn main() {
             std::process::exit(1);
         };
 
-        // vk07 抑制注入を行う専用スレッドを起動
+        // F13 抑制注入を行う専用スレッドを起動
         // Why: install() の後(フック設置後)で起動する。LLフックが Alt を検知した際に SetEvent で即座に起床させるため、メッセージループ開始前から待機状態にしておく。
         hook::start_suppress_thread();
 
