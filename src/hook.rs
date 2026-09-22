@@ -8,6 +8,8 @@
 //! また、Alt押下でメニューバーがアクティブになる問題を、参照元(AHK)と同様に
 //! 抑制キー(F13)の入力を注入してキャンセルする。
 //!
+//! トレイメニューで無効化されている間は本モジュールの処理全体をスキップし、全キーを素通りさせる。
+//!
 //! Why F13か(参照元 AHK の vk07 から変更):
 //! - Alt押下中に非Altキーを1発打てばWin32メニュー活性化はキャンセルできる。参照元は
 //!   未割当キー vk07 でこれを行うが、Chrome 等のブラウザは vk07 をDOMイベントとして
@@ -66,6 +68,8 @@ const VK_SUPPRESS: u32 = 0x7C;
 // 空打ち判定状態。Alt押下時にtrue、押下中に別キーが打たれたらfalse。
 static LALT_CLEAN: AtomicBool = AtomicBool::new(false);
 static RALT_CLEAN: AtomicBool = AtomicBool::new(false);
+// 機能の有効/無効。トレイメニューから切替わる。無効の間はフック手続きは何もせず全キーを素通りさせる。
+static ENABLED: AtomicBool = AtomicBool::new(true);
 // フックハンドル(解除用)。プロシージャと同じスレッドで触る。
 static HHOOK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 // IME 切替要求の PostMessage 先。main がトレイウィンドウ生成後に登録する。
@@ -95,6 +99,25 @@ pub unsafe fn uninstall() {
 /// フックコールバックから IME 切替を依頼するトレイウィンドウを登録する。
 pub unsafe fn set_tray_hwnd(hwnd: HWND) {
     TRAY_HWND.store(hwnd, Ordering::SeqCst);
+}
+
+/// IME切替機能(空打ち判定とF13抑制)の有効/無効を設定する。
+/// Why: ゲーム全画面など一時的に本ツールの挙動を止めたい場面向け。無効の間は
+///   low_level_proc が何もしないため Alt は通常のキーとして動作する(メニューバー
+///   活性化の抑制も効かなくなる)。状態はプロセス内のみで保持し、起動時は常に有効。
+pub fn set_enabled(on: bool) {
+    ENABLED.store(on, Ordering::SeqCst);
+    if !on {
+        // Why: Alt押下中に無効化した場合に空打ちフラグが true のまま残っていると、
+        //   再有効化直後の KeyUp で無効化期間をまたいだ空打ちと誤判定されるため掃落とす。
+        LALT_CLEAN.store(false, Ordering::SeqCst);
+        RALT_CLEAN.store(false, Ordering::SeqCst);
+    }
+}
+
+/// IME切替機能が有効かどうか。トレイメニューのチェック状態の表示に使う。
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::SeqCst)
 }
 
 /// F13 抑制注入だけを担う専用スレッドを起動する。
@@ -128,7 +151,9 @@ pub unsafe fn start_suppress_thread() {
 
 /// 低レベルキーボードフックのプロシージャ。
 unsafe extern "system" fn low_level_proc(code: i32, wparam: usize, lparam: isize) -> isize {
-    if code >= 0 {
+    // Why: トレイメニューで無効化されている間は空打ち判定・F13抑制の両方を行わない。
+    //   フック自体は残したままでプロシージャ先頭で抜けるため、全キーはそのまま次へ渡る。
+    if code >= 0 && is_enabled() {
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
 
         // 抑制用キー自身は無視(SendInputの再帰呼出で空打ち判定を壊さないため)
