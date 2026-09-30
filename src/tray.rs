@@ -2,7 +2,8 @@
 //!
 //! 不可視のメッセージ専用ウィンドウを作成し、Shell_NotifyIconW で
 //! トレイアイコンを登録する。右/左クリックでポップアップメニューを表示し、
-//! 「一時無効」の切替、「自動起動」の切替、「実行ファイルの場所を開く」、「アップデートの確認」、「終了」を提供する。
+//! 「一時無効」の切替、「自動起動」の切替、「実行ファイルの場所を開く」、「アップデートの確認」、
+//! 「起動時にアップデートを確認」の切替、「終了」を提供する。
 
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -18,7 +19,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
-use crate::{hook, ime, startup, update, wide};
+use crate::{hook, ime, settings, startup, update, wide};
 
 // カスタムメッセージ(トレイアイコンのコールバック)
 const WM_APP: u32 = 0x8000;
@@ -31,6 +32,8 @@ const IDM_OPEN_LOCATION: usize = 1003;
 const IDM_CHECKUPDATE: usize = 1004;
 // Constraint: IDM_CHECKUPDATE(1004) と衝突しない値。1005 を割り当てる。
 const IDM_TEMP_DISABLE: usize = 1005;
+// Constraint: IDM_TEMP_DISABLE(1005) と衝突しない値。1006 を割り当てる。
+const IDM_UPDATE_ON_STARTUP: usize = 1006;
 
 /// windows_sys 0.59 が公開していない MAKEINTRESOURCEW マクロ相当。
 /// 整数リソースID を名前ではなく番号として解釈させるため、整数を LPCWSTR へキャストする。
@@ -148,6 +151,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
                     update::check_async(hwnd, update::Trigger::Manual);
                     0
                 }
+                IDM_UPDATE_ON_STARTUP => {
+                    toggle_update_on_startup();
+                    0
+                }
                 IDM_EXIT => {
                     DestroyWindow(hwnd);
                     0
@@ -192,6 +199,20 @@ unsafe fn show_menu(hwnd: HWND) {
         IDM_AUTOSTART,
         wide("自動起動").as_ptr(),
     );
+    // 「起動時にアップデートを確認」はチェック=有効。既定は有効(未設定時)。
+    let update_on_startup_flag = if settings::update_check_on_startup() {
+        MF_CHECKED
+    } else {
+        MF_UNCHECKED
+    };
+    AppendMenuW(
+        menu,
+        MF_STRING | update_on_startup_flag,
+        IDM_UPDATE_ON_STARTUP,
+        wide("起動時にアップデートを確認").as_ptr(),
+    );
+    // トグル系(上)とアクション系(下)を区切る
+    AppendMenuW(menu, MF_SEPARATOR, 0, core::ptr::null());
     AppendMenuW(
         menu,
         MF_STRING,
@@ -232,6 +253,11 @@ unsafe fn toggle_autostart() {
     } else {
         startup::enable();
     }
+}
+
+/// 起動時のアップデート確認の有効/無効を切替える(メニュー項目「起動時にアップデートを確認」)。
+unsafe fn toggle_update_on_startup() {
+    settings::set_update_check_on_startup(!settings::update_check_on_startup());
 }
 
 /// IME切替機能(空打ち判定とF13抑制)を一時無効/再有効化する(メニュー項目「一時無効」の切替)。
