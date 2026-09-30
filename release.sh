@@ -5,7 +5,8 @@
 #   1. 当日日付(yyyy.mm.dd)でバージョンを生成
 #      ※当日に既にリリース済みの場合は ".N" のsuffixを付与
 #   2. release ビルドで exe を生成
-#   3. GitHub Release を作成し exe をアセットとして配布
+#   3. コミット履歴からリリースノート(変更内容)を生成
+#   4. GitHub Release を作成し exe をアセットとして配布
 #
 # 使い方:
 #   bash release.sh
@@ -52,13 +53,50 @@ cargo build --release
 # 配布用にリネームしてコピー
 cp "target/release/alt-ime-rs.exe" "${ASSET}"
 
-# GitHub Release を作成しアセットをアップロード
-gh release create "${TAG}" "${ASSET}" \
-    --title "${TAG}" \
-    --notes "alt-ime-rs ${TAG}
+# リリースノート本文を生成(定型文 + 前回リリース以降のコミット一覧)
+# Why: 変更内容(feat=追加/fix=修正)を自動で列挙し、手書きノートの作成漏れを防ぐため。
+#   対象はConventional Commitsのsubjectのみ。コミット本文の詳細は載せない(冗長のため)。
+# Note: docs:/chore: のコミットは載せない。定型文がexe利用者向けなので意図的な除外であり、
+#   抜け漏れではない(git log に "docs: 公開に向けたドキュメント整備" 等の実績あり)。
+# Why: gh release create はリモートにのみタグを作成しローカルには反映されないため、
+#   fetchしないと PREV_TAG が前々回のタグになり、リリース済みコミットをノートへ再掲する。
+git fetch --tags --quiet
+PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+
+NOTES="alt-ime-rs ${TAG}
 
 Windows 11 向けビルド。ダウンロードして実行してください。
 左右のAltキーの空打ちでIMEを切り替えます。"
+
+if [ -n "${PREV_TAG}" ]; then
+    # git describe --abbrev=0: HEADから到達可能な直近のタグ(初回リリース時は空)
+    # 正規表現は feat/fix + 任意のスコープ + 任意の! + ':' に厳密一致させる
+    # Why: 緩い "feat[^:]*:" だと "featuring:"/"fixed:" 等の非Conventionalなsubjectまで誤分類するため。
+    ADDED="$(git log "${PREV_TAG}"..HEAD --format='%s' | sed -En 's/^feat(\([^:]*\))?!?: ?/- /p')"
+    FIXED="$(git log "${PREV_TAG}"..HEAD --format='%s' | sed -En 's/^fix(\([^:]*\))?!?: ?/- /p')"
+    if [ -n "${ADDED}" ] || [ -n "${FIXED}" ]; then
+        NOTES="${NOTES}
+
+## 変更内容"
+        if [ -n "${ADDED}" ]; then
+            NOTES="${NOTES}
+
+### 追加
+${ADDED}"
+        fi
+        if [ -n "${FIXED}" ]; then
+            NOTES="${NOTES}
+
+### 修正
+${FIXED}"
+        fi
+    fi
+fi
+
+# GitHub Release を作成しアセットをアップロード
+gh release create "${TAG}" "${ASSET}" \
+    --title "${TAG}" \
+    --notes "${NOTES}"
 
 # 配布用 exe を削除(リポジトリを汚さないため)
 rm -f "${ASSET}"
