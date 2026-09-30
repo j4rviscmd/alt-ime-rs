@@ -10,6 +10,7 @@
 
 mod hook;
 mod ime;
+mod settings;
 mod startup;
 mod tray;
 mod update;
@@ -52,11 +53,13 @@ fn main() {
         // Why: install() より後、かつメッセージループ開始より前で登録する。install 前だとフックはまだ来ず、ループ開始後だと初回 Alt 空打ちの切替要求が null 宛になり取りこぼされるため、この順序が必須。
         hook::set_tray_hwnd(hwnd);
 
-        // 起動時のアップデート確認を非同期で開始
+        // 起動時のアップデート確認を非同期で開始(設定で無効化されている場合はスキップ)
         // Why: トレイウィンドウ生成後・メッセージループ直前に起動する。通信は別スレッドで
         //   メインスレッドをブロックしないため起動遅延なし。結果は PostMessage でキューへ
         //   積まれ、ループ開始後に WM_APP_UPDATE_RESULT として処理される(hwnd 有効なら即Post可能)。
-        update::check_async(hwnd, update::Trigger::Startup);
+        if settings::update_check_on_startup() {
+            update::check_async(hwnd, update::Trigger::Startup);
+        }
 
         // メッセージループ(WH_KEYBOARD_LL はメッセージポンプが必須)
         // Constraint: LLフックのコールバックはフック設置スレッドのメッセージキューへ配送される。そのため設置したスレッド(=メイン)でポンプを回し続ける必要がある。
