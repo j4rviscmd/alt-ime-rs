@@ -18,7 +18,8 @@
 //! - F13(VK 0x7C)は実際のキーボードに存在しないLegacyキーで、DOM keydown/keyup
 //!   (Chrome実測 keyCode 124)としてページへ配信される。Excel webは「Alt押下中に別キーがあった
 //!   =複合キー」と認識しKeyTipsを出さなくなる。Win32メニュー抑制も同一仕組みで効く。
-//!   代償として F13 に割当のあるアプリ(実用上稀)では空打ち時にゴーストF13が見える。
+//!   代償として F13 に割当のあるアプリ(実用上稀)では空打ち時にゴーストF13が見える
+//!   (該当最大の端末は後述の通りスキップ対象とし、実際に稀になった)。
 //!   また自己注入F13と実F13を区別しないため、Alt押下中に物理F13を打っても空打ち判定は
 //!   解除されない(LLKHF_INJECTED判定は行わない設計)。
 //! - F13はAltのKeyDown時と空打ち確定のKeyUp時の2箇所で注入する。KeyDown時の注入は
@@ -26,6 +27,12 @@
 //!   キー」として届き複合キー扱いされない(メニュー抑制には効く)。KeyUp時の注入は配信中の
 //!   Alt KeyUpより先行して「Alt押下中のキー」として届くため、WebアプリのAlt単押し判定を
 //!   確実に打ち消せる(CDP計測による順序検証済み)。
+//!
+//! Why 端末ではF13注入をスキップするか:
+//! - 端末はメニューバーを持たずF13注入の利益がゼロ。一方で端末はF13をエスケープシーケンスとして
+//!   シェルへ転送するため、nvim等で<F13>が入力されてしまう。そのため
+//!   terminal::focused_is_terminal がtrueの間は注入だけを行わない(IME切替の空打ち判定は
+//!   影響を受けない)。対象端末と判定方法は terminal モジュールのdoc参照。
 //!
 //! Why F13注入を別スレッド + Event 駆動で行うか:
 //! - 参照元 AHK の *~LAlt::Send {Blind}{vk07} はホットキー発火で即座に注入キーを送る。
@@ -42,6 +49,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::thread;
+
+use crate::terminal;
 
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -239,7 +248,13 @@ unsafe fn request_ime_toggle(on: bool) {
 
 /// Alt押下でメニューバー/Webアプリ(Excel webのKeyTips等)がアクティブになるのを防ぐため、
 /// F13を注入する。start_suppress_thread で起動した F13 注入専用スレッドから呼ばれる。
+/// フォーカスが端末の場合はF13がシェルへ転送されてnvim等に<F13>が入力されるため注入をスキップする。
 unsafe fn suppress_menu() {
+    // Why: 端末はメニューバーを持たずF13注入の利益がない一方、F13をエスケープシーケンスとして
+    //   シェルへ転送してしまうためスキップする。判定は注入直前(=配送先が確定した瞬間)のフォーカスで行う。
+    if terminal::focused_is_terminal() {
+        return;
+    }
     // Why: メニュー活性化を確実にキャンセルするには押下/解放の完全な対が必要。downのみ残すと未解放状態が残るためupまで注入。
     let mut inputs: [INPUT; 2] = [core::mem::zeroed(); 2];
     inputs[0].r#type = INPUT_KEYBOARD;
