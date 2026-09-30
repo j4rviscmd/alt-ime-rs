@@ -12,6 +12,7 @@ mod hook;
 mod ime;
 mod settings;
 mod startup;
+mod terminal;
 mod tray;
 mod update;
 
