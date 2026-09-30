@@ -4,3 +4,6 @@
 # アイコン生成スクリプトのプレビュー産物(再生成可能)
 scripts/_preview/
 .worktrees/
+
+# Excalidraw MCP のログ(ローカル環境産物)
+excalidraw.log

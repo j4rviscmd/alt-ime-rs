@@ -2,7 +2,7 @@
 //!
 //! 不可視のメッセージ専用ウィンドウを作成し、Shell_NotifyIconW で
 //! トレイアイコンを登録する。右/左クリックでポップアップメニューを表示し、
-//! 「自動起動」の切替、「実行ファイルの場所を開く」、「アップデートの確認」、「終了」を提供する。
+//! 「一時無効」の切替、「自動起動」の切替、「実行ファイルの場所を開く」、「アップデートの確認」、「終了」を提供する。
 
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -18,7 +18,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
-use crate::{ime, startup, update, wide};
+use crate::{hook, ime, startup, update, wide};
 
 // カスタムメッセージ(トレイアイコンのコールバック)
 const WM_APP: u32 = 0x8000;
@@ -29,6 +29,8 @@ const IDM_EXIT: usize = 1002;
 const IDM_OPEN_LOCATION: usize = 1003;
 // Constraint: IDM_OPEN_LOCATION(1003) と衝突しない値。1004 を割り当てる。
 const IDM_CHECKUPDATE: usize = 1004;
+// Constraint: IDM_CHECKUPDATE(1004) と衝突しない値。1005 を割り当てる。
+const IDM_TEMP_DISABLE: usize = 1005;
 
 /// windows_sys 0.59 が公開していない MAKEINTRESOURCEW マクロ相当。
 /// 整数リソースID を名前ではなく番号として解釈させるため、整数を LPCWSTR へキャストする。
@@ -129,6 +131,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
         WM_COMMAND => {
             let id = wparam & 0xFFFF;
             match id {
+                IDM_TEMP_DISABLE => {
+                    toggle_temp_disable();
+                    0
+                }
                 IDM_AUTOSTART => {
                     toggle_autostart();
                     0
@@ -163,6 +169,18 @@ unsafe fn show_menu(hwnd: HWND) {
     if menu.is_null() {
         return;
     }
+    // 「一時無効」はチェック=無効中という反転表現。有効中はチェックなし。
+    let temp_disable_flag = if hook::is_enabled() {
+        MF_UNCHECKED
+    } else {
+        MF_CHECKED
+    };
+    AppendMenuW(
+        menu,
+        MF_STRING | temp_disable_flag,
+        IDM_TEMP_DISABLE,
+        wide("一時無効").as_ptr(),
+    );
     let autostart_flag = if startup::is_enabled() {
         MF_CHECKED
     } else {
@@ -214,6 +232,11 @@ unsafe fn toggle_autostart() {
     } else {
         startup::enable();
     }
+}
+
+/// IME切替機能(空打ち判定とF13抑制)を一時無効/再有効化する(メニュー項目「一時無効」の切替)。
+unsafe fn toggle_temp_disable() {
+    hook::set_enabled(!hook::is_enabled());
 }
 
 /// アップデート確認の結果(lparam に Box<CheckResult> の生ポインタ)を受け取り、
