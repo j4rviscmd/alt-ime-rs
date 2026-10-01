@@ -19,8 +19,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
-use crate::{hook, ime, settings, startup, update, wide};
-
+use crate::{hook, ime, selfupdate, settings, startup, update, wide};
 // カスタムメッセージ(トレイアイコンのコールバック)
 const WM_APP: u32 = 0x8000;
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -120,7 +119,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
         // Why: 通信は別スレッドで行い、MessageBox はメインスレッドで出す。PostMessage の
         //   lparam に Box<CheckResult> の生ポインタを載せて受け渡す(同パターンは WM_APP_* 系)。
         crate::WM_APP_UPDATE_RESULT => {
-            handle_update_result(lparam);
+            handle_update_result(hwnd, lparam);
+            0
+        }
+        // セルフアップデート適用スレッドからの結果受領 → 成功なら終了、失敗なら手動導線へ
+        // Why: 適用(DL・差し替え・新exe起動)は別スレッドで行い、プロセス終了と
+        //   MessageBox はメインスレッドで行う。PostMessage の lparam に
+        //   Box<ApplyOutcome> の生ポインタを載せる(CheckResult と同パターン)。
+        crate::WM_APP_UPDATE_APPLIED => {
+            handle_update_applied(hwnd, lparam);
             0
         }
         WM_TRAYICON => {
@@ -148,7 +155,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
                 }
                 IDM_CHECKUPDATE => {
                     // 別スレッドでGitHub APIへ問い合わせ(メインスレッドをブロックしない)
-                    update::check_async(hwnd, update::Trigger::Manual);
+                    // Why 適用中は抑制: DL・差し替え中に確認結果ダイアログが重なり、
+                    //   二重の同意を誘くのを防ぐ。
+                    if !selfupdate::is_applying() {
+                        update::check_async(hwnd, update::Trigger::Manual);
+                    }
                     0
                 }
                 IDM_UPDATE_ON_STARTUP => {
@@ -267,25 +278,25 @@ unsafe fn toggle_temp_disable() {
 
 /// アップデート確認の結果(lparam に Box<CheckResult> の生ポインタ)を受け取り、
 /// トリガと結果に応じたダイアログを表示する。
-unsafe fn handle_update_result(lparam: isize) {
+unsafe fn handle_update_result(hwnd: HWND, lparam: isize) {
     if lparam == 0 {
         return;
     }
     // 生ポインタから Box を再構築し、所有権を受け取って解放する
     let update::CheckResult { trigger, outcome } =
         *Box::from_raw(lparam as *mut update::CheckResult);
-    show_update_dialog(trigger, outcome);
+    show_update_dialog(hwnd, trigger, outcome);
 }
 
 /// トリガと結果に応じてダイアログを表示する。
-unsafe fn show_update_dialog(trigger: update::Trigger, outcome: update::Outcome) {
+unsafe fn show_update_dialog(hwnd: HWND, trigger: update::Trigger, outcome: update::Outcome) {
     // 起動時(Startup)は「更新あり」の時だけ表示。最新時・失敗時は静かに抜ける。
     // Why: 起動のたびにMessageBoxが出るのはユーザ体験を損ねるため、必要最小限(更新あり)に抑える。
     let silent_unless_update = matches!(trigger, update::Trigger::Startup);
     match outcome {
         update::Outcome::UpdateAvailable(latest) => {
             let msg = format!(
-                "新しいバージョンがあります。\n\n現在: v{}\n最新: {}\n\n配布ページを開きますか？",
+                "新しいバージョンがあります。\n\n現在: v{}\n最新: {}\n\n自動で更新しますか？",
                 update::APP_VERSION,
                 latest
             );
@@ -296,7 +307,10 @@ unsafe fn show_update_dialog(trigger: update::Trigger, outcome: update::Outcome)
                 MB_YESNO | MB_ICONINFORMATION,
             );
             if rc == IDYES as i32 {
-                open_releases_page();
+                // 同意を得たので DL〜差し替え〜再起動を別スレッドで開始する。
+                // 結果は WM_APP_UPDATE_APPLIED で受け取る(この時点では何も表示しない)。
+                // Why いいえを記憶しない: 次回検知時に再度尋ねる(毎回同意の要件どおり)。
+                selfupdate::apply_async(hwnd, latest);
             }
         }
         update::Outcome::UpToDate(latest) => {
@@ -327,9 +341,40 @@ unsafe fn show_update_dialog(trigger: update::Trigger, outcome: update::Outcome)
     }
 }
 
+/// セルフアップデート適用の結果(lparam に Box<ApplyOutcome> の生ポインタ)を受け取る。
+/// 成功→即時再起動のため IDM_EXIT と同一の終了経路へ。失敗→手動導線へフォールバック。
+unsafe fn handle_update_applied(hwnd: HWND, lparam: isize) {
+    if lparam == 0 {
+        return;
+    }
+    let outcome = *Box::from_raw(lparam as *mut selfupdate::ApplyOutcome);
+    match outcome {
+        selfupdate::ApplyOutcome::Applied => {
+            // 新 exe は既に起動済み。旧プロセスは終了して新旧を交代させる。
+            // DestroyWindow → WM_DESTROY → PostQuitMessage → main の終了処理(IDM_EXIT と同一)。
+            DestroyWindow(hwnd);
+        }
+        selfupdate::ApplyOutcome::ApplyFailed => {
+            // Why Startup 起因でも表示: ユーザが「はい」で同意済みの能動操作の失敗であり、
+            //   検知失敗時の静穏政策(受動的失敗は黙る)の対象外。
+            let rc = MessageBoxW(
+                core::ptr::null_mut(),
+                wide("自動アップデートに失敗しました。\n配布ページを開いて手動で更新しますか？")
+                    .as_ptr(),
+                wide("アップデート").as_ptr(),
+                MB_YESNO | MB_ICONWARNING,
+            );
+            if rc == IDYES {
+                open_releases_page();
+            }
+        }
+    }
+}
+
 /// 既定ブラウザで配布ページ(Releases/latest)を開く。
 unsafe fn open_releases_page() {
-    // Why: DL・実行はユーザ任せ(実行中exeの置換問題を避け、ブラウザで案内するだけに留める)。
+    // Why: 手動導線のフォールバック先。exe は selfupdate.rs が差し替えるため、
+    //   ここは通信・検知に失敗した際の案内としてのみ使われる。
     let _ = ShellExecuteW(
         core::ptr::null_mut(),
         wide("open").as_ptr(),

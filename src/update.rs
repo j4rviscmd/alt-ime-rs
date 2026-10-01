@@ -7,6 +7,8 @@
 //!   フックを LowLevelHooksTimeout で強制解除してキーボード入力が効かなくなる。
 //! - 結果を Box<CheckResult> でヒープ確保し PostMessageW(WM_APP_UPDATE_RESULT) で
 //!   トレイウィンドウ(メインスレッド)へ受け渡す。UI 表示は tray.rs が行う。
+//! - 同意後の適用(DL・差し替え・再起動)は selfupdate.rs が行う。HTTP 取得の雛形
+//!   (http_get_bytes)だけをこちらが提供する。
 //! - 現在版は build.rs が焼き込んだ APP_VERSION。CIのリリースビルドでは Release PR が
 //!   バンプした Cargo.toml の version が使われる(ALT_IME_VERSION はローカル上書き用)。
 //!
@@ -109,9 +111,14 @@ pub(crate) fn check_async(hwnd: HWND, trigger: Trigger) {
     });
 }
 
-/// WinHTTP で GitHub Releases API を GET し、最新版と比較した結果を返す。
-unsafe fn fetch_latest_outcome() -> Outcome {
-    let mut outcome = Outcome::Failed;
+/// WinHTTP で https://host/path を GET し、ステータス200の応答本文をバイト列で返す。
+/// Why 共通化: 検知(Releases API)と適用(selfupdate.rs による asset DL)で要求ライフ
+///   サイクル(Open→SetTimeouts→Connect→OpenRequest→送受信→200確認→読込)が完全に
+///   同一のため、雛形の重複を避けて一方に寄せる。
+/// Why リダイレクト追従の明示コードが無い: WinHTTP の既定ポリシーは https→https の
+///   リダイレクトを自動追従する(拒否するのは https→http への降格のみ)。github.com の
+///   asset DL が objects.githubusercontent.com へ 302 する場合も最終 200 が得られる。
+pub(crate) unsafe fn http_get_bytes(host: &str, path: &str, max_bytes: usize) -> Option<Vec<u8>> {
     let session = WinHttpOpen(
         wide(USER_AGENT).as_ptr(),
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -119,38 +126,61 @@ unsafe fn fetch_latest_outcome() -> Outcome {
         core::ptr::null(),
         0,
     );
-    if !session.is_null() {
-        WinHttpSetTimeouts(session, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS);
-        let connect = WinHttpConnect(
-            session,
-            wide(API_HOST).as_ptr(),
-            INTERNET_DEFAULT_HTTPS_PORT as u16,
-            0,
-        );
-        if !connect.is_null() {
-            let request = WinHttpOpenRequest(
-                connect,
-                wide("GET").as_ptr(),
-                wide(API_PATH).as_ptr(),
-                core::ptr::null(),
-                core::ptr::null(),
-                core::ptr::null(),
-                WINHTTP_FLAG_SECURE,
-            );
-            if !request.is_null() {
-                outcome = send_and_read(request);
-                WinHttpCloseHandle(request);
-            }
-            WinHttpCloseHandle(connect);
-        }
-        WinHttpCloseHandle(session);
+    if session.is_null() {
+        return None;
     }
-    outcome
+    WinHttpSetTimeouts(session, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS);
+    let connect = WinHttpConnect(
+        session,
+        wide(host).as_ptr(),
+        INTERNET_DEFAULT_HTTPS_PORT as u16,
+        0,
+    );
+    if connect.is_null() {
+        WinHttpCloseHandle(session);
+        return None;
+    }
+    let request = WinHttpOpenRequest(
+        connect,
+        wide("GET").as_ptr(),
+        wide(path).as_ptr(),
+        core::ptr::null(),
+        core::ptr::null(),
+        core::ptr::null(),
+        WINHTTP_FLAG_SECURE,
+    );
+    let bytes = if request.is_null() {
+        None
+    } else {
+        let bytes = send_and_read_bytes(request, max_bytes);
+        WinHttpCloseHandle(request);
+        bytes
+    };
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+    bytes
+}
+
+/// WinHTTP で GitHub Releases API を GET し、最新版と比較した結果を返す。
+unsafe fn fetch_latest_outcome() -> Outcome {
+    let Some(bytes) = http_get_bytes(API_HOST, API_PATH, MAX_BODY_BYTES) else {
+        return Outcome::Failed;
+    };
+    // API 応答は UTF-8 の JSON。不正バイト列なら比較不能として失敗扱い。
+    let Ok(body) = String::from_utf8(bytes) else {
+        return Outcome::Failed;
+    };
+    parse_and_compare(&body)
 }
 
 /// 要求を送信し、応答ステータスと本文を検査する。
-unsafe fn send_and_read(request: *mut core::ffi::c_void) -> Outcome {
+unsafe fn send_and_read_bytes(
+    request: *mut core::ffi::c_void,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
     // GitHub API 必須ヘッダ。User-Agent を明示し、Accept で JSON を要求する。
+    // Why asset DL でも同一ヘッダ: Accept は非API端点(github.com の DL)では単に
+    //   無視されるため、検知と適用で要求生成を共通化できる。
     let headers = wide("User-Agent: alt-ime-rs\r\nAccept: application/vnd.github+json\r\n");
     // 第3引数に u32::MAX を渡すと null終端文字列として長さ自動計算(WinHTTP 仕様)。
     WinHttpAddRequestHeaders(
@@ -160,19 +190,16 @@ unsafe fn send_and_read(request: *mut core::ffi::c_void) -> Outcome {
         WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE,
     );
     if WinHttpSendRequest(request, core::ptr::null(), 0, core::ptr::null(), 0, 0, 0) == 0 {
-        return Outcome::Failed;
+        return None;
     }
     if WinHttpReceiveResponse(request, core::ptr::null_mut()) == 0 {
-        return Outcome::Failed;
+        return None;
     }
     // HTTP 200 以外は失敗扱い(レート制限 403/429 等もここで除外)
     if !status_is_ok(request) {
-        return Outcome::Failed;
+        return None;
     }
-    let Some(body) = read_body(request) else {
-        return Outcome::Failed;
-    };
-    parse_and_compare(&body)
+    read_body_bytes(request, max_bytes)
 }
 
 /// ステータスコードが 200(OK) かを数値で問い合わせる。
@@ -190,8 +217,10 @@ unsafe fn status_is_ok(request: *mut core::ffi::c_void) -> bool {
     ok != 0 && status == 200
 }
 
-/// 応答本文を全て読み込んで UTF-8 文字列で返す。上限を超えたら打ち切る。
-unsafe fn read_body(request: *mut core::ffi::c_void) -> Option<String> {
+/// 応答本文を全て読み込んでバイト列で返す。上限を超えたら失敗(None)で返す。
+/// Why 打ち切りでなく失敗: 打ち切った本文は exe 破損や誤タグ抽出に直結するため、
+///   上限超過はその時点で異常応答として扱う。
+unsafe fn read_body_bytes(request: *mut core::ffi::c_void, max_bytes: usize) -> Option<Vec<u8>> {
     let mut body: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
@@ -219,11 +248,11 @@ unsafe fn read_body(request: *mut core::ffi::c_void) -> Option<String> {
         // 念のため要求バイト数でクリップ(WinHTTP が read<=to_read を保証するが防御的に)
         let n = core::cmp::min(read as usize, buf.len());
         body.extend_from_slice(&buf[..n]);
-        if body.len() >= MAX_BODY_BYTES {
-            break;
+        if body.len() > max_bytes {
+            return None;
         }
     }
-    String::from_utf8(body).ok()
+    Some(body)
 }
 
 /// JSON 本文(Releases一覧)から移行後のSemVerタグを抽出し、現在版と比較する。

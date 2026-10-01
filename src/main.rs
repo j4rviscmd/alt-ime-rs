@@ -10,6 +10,7 @@
 
 mod hook;
 mod ime;
+mod selfupdate;
 mod settings;
 mod startup;
 mod terminal;
@@ -30,6 +31,13 @@ pub(crate) const WM_APP_IME_TOGGLE: u32 = 0x8003;
 //   結果をメインスレッドへ受け渡す(WM_APP_IME_TOGGLE と同じパターン)。
 // Constraint: 既存の WM_APP 系(0x8000〜0x8001, 0x8003)と衝突しない値。0x8004 を割り当てる。
 pub(crate) const WM_APP_UPDATE_RESULT: u32 = 0x8004;
+
+// セルフアップデート適用スレッドからトレイウィンドウへ結果を受け渡すカスタムメッセージ。
+// Why: DL・差し替えは別スレッドで行い、プロセス終了(成功)とフォールバック表示(失敗)は
+//   メインスレッドで行うため、PostMessage で結果をメインスレッドへ受け渡す
+//   (WM_APP_UPDATE_RESULT と同じパターン)。
+// Constraint: 既存の WM_APP 系(0x8000〜0x8001, 0x8003〜0x8004)と衝突しない値。0x8005 を割り当てる。
+pub(crate) const WM_APP_UPDATE_APPLIED: u32 = 0x8005;
 
 fn main() {
     unsafe {
@@ -53,6 +61,12 @@ fn main() {
         // フックコールバックが IME 切替を PostMessage する宛先を登録
         // Why: install() より後、かつメッセージループ開始より前で登録する。install 前だとフックはまだ来ず、ループ開始後だと初回 Alt 空打ちの切替要求が null 宛になり取りこぼされるため、この順序が必須。
         hook::set_tray_hwnd(hwnd);
+
+        // 前回セルフアップデートの .old(旧exe)を掃除する(存在すれば1回だけ削除を試みる)。
+        // Why この位置で同期呼び出し: 存在チェック+削除1回は即座に終わるためメッセージループ
+        //   開始を遅延させない。旧プロセスの後片付けは新プロセスの責務(実行中の自イメージは
+        //   削除できないため)。ロック中で失敗しても次回起動に持ち越すだけ。
+        selfupdate::cleanup_old();
 
         // 起動時のアップデート確認を非同期で開始(設定で無効化されている場合はスキップ)
         // Why: トレイウィンドウ生成後・メッセージループ直前に起動する。通信は別スレッドで
