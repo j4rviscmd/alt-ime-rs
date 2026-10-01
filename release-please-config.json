@@ -4,6 +4,7 @@
   "packages": {
     ".": {
       "release-type": "rust",
+      "include-component-in-tag": false,
       "changelog-sections": [
         { "type": "feat", "section": "追加" },
         { "type": "fix", "section": "修正" }
