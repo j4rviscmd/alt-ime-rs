@@ -1,7 +1,7 @@
 [package]
 name = "alt-ime-rs"
-# リリース時は release.sh がタイムスタンプで上書きする
-version = "0.1.0"
+# リリースは release-please のRelease PRがバンプする(初回リリース=1.0.0)
+version = "1.0.0"
 edition = "2021"
 description = "左右のAltキーの空打ちでIMEのON/OFFを切り替えるWindows向け常駐ツール"
 license = "MIT"

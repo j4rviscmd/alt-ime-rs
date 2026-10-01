@@ -7,8 +7,8 @@
 //!   フックを LowLevelHooksTimeout で強制解除してキーボード入力が効かなくなる。
 //! - 結果を Box<CheckResult> でヒープ確保し PostMessageW(WM_APP_UPDATE_RESULT) で
 //!   トレイウィンドウ(メインスレッド)へ受け渡す。UI 表示は tray.rs が行う。
-//! - 現在版は build.rs が環境変数 ALT_IME_VERSION から焼き込んだ APP_VERSION。
-//!   release.sh 未使用の通常ビルドでは Cargo.toml の version(0.1.0) にフォールバック。
+//! - 現在版は build.rs が焼き込んだ APP_VERSION。CIのリリースビルドでは Release PR が
+//!   バンプした Cargo.toml の version が使われる(ALT_IME_VERSION はローカル上書き用)。
 //!
 //! Why Token を使わない: 公開リポジトリの /releases/latest は未認証で取得でき、
 //!   未認証でも 60req/時/IP あり手動+起動時の 1req/起動 ではまず到達しない。
@@ -29,14 +29,18 @@ use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 use crate::wide;
 
 // GitHub API のエンドポイント(HTTPS)
+// Why Releases一覧API: /releases/latest は旧CalVer版利用者への案内用sentinel
+//   (v9999.99.99)を常に返す運用のため、そこからSemVerタグを選ぶことができない。
+//   10件=数年分(sentinelとCalVerタグを差し引いても実用上十分)。
 const API_HOST: &str = "api.github.com";
-const API_PATH: &str = "/repos/j4rviscmd/alt-ime-rs/releases/latest";
+const API_PATH: &str = "/repos/j4rviscmd/alt-ime-rs/releases?per_page=10";
 // 配布ページ(ブラウザで開く)。/releases/latest は最新Releaseへリダイレクトされる。
 pub(crate) const RELEASES_URL: &str = "https://github.com/j4rviscmd/alt-ime-rs/releases/latest";
 // User-Agent。GitHub API は User-Agent 無しの要求を 403 で弾くため必須。
 const USER_AGENT: &str = "alt-ime-rs";
 
-// ビルド時に焼き込まれた現在版(release.sh が ALT_IME_VERSION を設定。未設定時は Cargo.toml の version)。
+// ビルド時に焼き込まれた現在版(CIではRelease PRがバンプしたCargo.tomlのversion。
+// ALT_IME_VERSION 環境変数はローカルで版を明示したいときの上書き経路)。
 pub(crate) const APP_VERSION: &str = env!("ALT_IME_VERSION");
 
 // 通信タイムアウト(ミリ秒)。resolve / connect / send / receive すべてに適用。
@@ -222,30 +226,45 @@ unsafe fn read_body(request: *mut core::ffi::c_void) -> Option<String> {
     String::from_utf8(body).ok()
 }
 
-/// JSON 本文から tag_name を抽出し、現在版と比較する。
+/// JSON 本文(Releases一覧)から移行後のSemVerタグを抽出し、現在版と比較する。
 /// JSON パーサを依存に加えず、既知の単一フィールドを素朴に走査して取り出す。
 fn parse_and_compare(body: &str) -> Outcome {
-    let Some(tag) = parse_tag_name(body) else {
+    let Some(tag) = latest_semver_tag(body) else {
         return Outcome::Failed;
     };
-    // tag は "vYYYY.MM.DD" 形式。先頭の v を除去して比較。
-    // 日付版(YYYY.MM.DD・ゼロ埋め)は辞書順=時系列順に一致するため、文字列比較で正しく判定できる。
-    // 同一日の再リリース(.N suffix)も辞書順で「より新しい」と判定される。
-    let latest = tag.strip_prefix('v').unwrap_or(tag.as_str());
-    if latest > APP_VERSION {
+    if version_newer(&tag, APP_VERSION) {
         Outcome::UpdateAvailable(tag)
     } else {
         Outcome::UpToDate(tag)
     }
 }
 
+/// 本文に現れる全 tag_name のうち、SemVer形式(メジャー3桁以内)で最大のものを返す。
+/// Why 最大を選ぶ: 一覧は作成降順だがsentinelのような非SemVerタグが先頭に来るため、
+///   位置ではなく値で最新を決める。
+/// Why メジャー3桁制限: 旧CalVer(v2026.*)とsentinel(v9999.*)を1つの条件で除外するため。
+fn latest_semver_tag(body: &str) -> Option<String> {
+    const KEY: &str = "\"tag_name\"";
+    let mut best: Option<(Vec<u32>, String)> = None;
+    let mut rest = body;
+    while let Some(pos) = rest.find(KEY) {
+        rest = &rest[pos + KEY.len()..];
+        if let Some((parts, tag)) =
+            parse_tag_value(rest).and_then(|t| parse_version(&t).map(|p| (p, t)))
+        {
+            let newer = best.as_ref().is_none_or(|(b, _)| parts > *b);
+            if newer {
+                best = Some((parts, tag));
+            }
+        }
+    }
+    best.map(|(_, tag)| tag)
+}
+
 /// `"tag_name":"vXXXX"` の値部分を抽出する。失敗時は None。
 /// Why panic-free: ? 伝播と境界チェック済みのスライスのみ使用。ワーカースレッドは
 ///   panic = "abort" でプロセスを道連れにするため、ここでパニックしてはならない。
-fn parse_tag_name(body: &str) -> Option<String> {
-    const KEY: &str = "\"tag_name\"";
-    let start = body.find(KEY)?;
-    let after = &body[start + KEY.len()..];
+fn parse_tag_value(after: &str) -> Option<String> {
     // ':' を挟み、空白を読み飛ばして値の開始ダブルクォートを探す
     let rest = after
         .trim_start()
@@ -254,4 +273,70 @@ fn parse_tag_name(body: &str) -> Option<String> {
         .strip_prefix('"')?;
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+/// タグ("v1.2.3")を数値列へパースする。3部構成でない・メジャー3桁超は None。
+/// Why v接頭辞は省略可: 現在版APP_VERSIONはCARGO_PKG_VERSION(="1.0.0"等、v無し)から
+///   焼き込まれるため、v無しでもパースできないと更新検知が常に不成立になる。
+fn parse_version(tag: &str) -> Option<Vec<u32>> {
+    let body = tag.strip_prefix('v').unwrap_or(tag);
+    let parts: Vec<u32> = body
+        .split('.')
+        .map(|p| p.parse::<u32>().ok())
+        .collect::<Option<Vec<u32>>>()?;
+    if parts.len() != 3 || parts[0] > 999 {
+        return None;
+    }
+    Some(parts)
+}
+
+/// latest が current より新しいか。ドット区切りを数値として比較する。
+/// Why 辞書順不可: SemVerでは "v1.10.0" > "v1.9.0" が辞書順では逆転するため。
+fn version_newer(latest: &str, current: &str) -> bool {
+    match (parse_version(latest), parse_version(current)) {
+        (Some(l), Some(c)) => l > c,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // sentinel(v9999.*)と旧CalVer(v2026.*)を除外し、SemVerタグの最大値を選ぶ
+    #[test]
+    fn picks_max_semver_tag() {
+        let body = r#"[{"tag_name":"v9999.99.99"},{"tag_name":"v1.9.0"},{"tag_name":"v2026.09.30.1"},{"tag_name":"v1.10.0"}]"#;
+        assert_eq!(latest_semver_tag(body).as_deref(), Some("v1.10.0"));
+    }
+
+    // SemVerタグが1つも無いときはNone(=比較失敗扱い)
+    #[test]
+    fn no_semver_tag_is_none() {
+        let body = r#"[{"tag_name":"v9999.99.99"},{"tag_name":"v2026.09.30.1"}]"#;
+        assert_eq!(latest_semver_tag(body), None);
+    }
+
+    // 実APIの応答形式(コロン後にスペースあり)でも抽出できる
+    #[test]
+    fn parses_spaced_json_format() {
+        let body = r#"[{ "tag_name": "v1.0.0", "draft": false }]"#;
+        assert_eq!(latest_semver_tag(body).as_deref(), Some("v1.0.0"));
+    }
+
+    // 辞書順で逆転するケースを数値比較で正しく判定する
+    #[test]
+    fn compares_numerically() {
+        assert!(version_newer("v1.10.0", "v1.9.0"));
+        assert!(!version_newer("v1.9.0", "v1.10.0"));
+        assert!(!version_newer("v1.0.0", "v1.0.0"));
+        assert!(version_newer("v2.0.0", "v1.99.99"));
+    }
+    // 現在版が非SemVer(パース失敗)なら更新通知しない。
+    // v無し("0.1.0"=CARGO_PKG_VERSION由来)は正当な現在版なのでパース対象。
+    #[test]
+    fn unparseable_current_is_not_newer() {
+        assert!(version_newer("v1.0.0", "0.1.0"));
+        assert!(!version_newer("v1.0.0", "dev"));
+    }
 }

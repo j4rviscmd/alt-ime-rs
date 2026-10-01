@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "last-release-sha": "d53521af0f9e84171f791b440912c50fe5645b70",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "changelog-sections": [
+        { "type": "feat", "section": "追加" },
+        { "type": "fix", "section": "修正" }
+      ],
+      "initial-version": "1.0.0"
+    }
+  }
+}
