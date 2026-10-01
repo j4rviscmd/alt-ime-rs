@@ -3,8 +3,11 @@
 # 仕組み:
 #   1. mainへのpushごとに release-please がConventional Commitsを解析し、
 #      Cargo.toml/CHANGELOG.md をバンプする Release PR を自動作成・自動更新する
-#   2. Release PR をマージすると、vタグ + GitHub Release が自動作成される
-#   3. publishジョブがタグ位置のソースを windows-latest でビルドし、exe を添付する
+#   2. Release PR をマージすると、GitHub Release(draft) が自動作成される
+#   3. publishジョブがマージコミットを windows-latest でビルドして exe を添付し、
+#      完了後に Release を公開(draft解除)する
+#      Why draftで公開を遅らせる: ビルド中に「資産なしの公開Release」が
+#      /releases/latest へ現れる数分の窓を防ぐため。
 #
 # 前提(リポジトリ設定で一度だけ有効化):
 #   - Settings > Actions > General > Allow GitHub Actions to create and approve pull requests
@@ -45,18 +48,26 @@ jobs:
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: windows-latest
     steps:
+      # チェックアウトはRelease PRのマージコミット(=Releaseのtarget_commitishと同一SHA)。
+      # Why refにタグを指定しない: draftなReleaseはタグがまだ生成されていないため失敗する。
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
       - uses: dtolnay/rust-toolchain@stable
       - name: exeをビルド
         run: cargo build --release
         # Why 環境変数での版指定が不要: Release PRがCargo.tomlをバンプ済みのため、
         # build.rsのCARGO_PKG_VERSIONフォールバックが正しい版を焼き込む
-      - name: exeをReleaseへ添付
-        # Note: windows-latest の既定シェルは pwsh。"$TAG_NAME" 展開のために bash を明示する。
+      - name: exeをRelease(draft)へ添付
         shell: bash
+        # Note: windows-latest の既定シェルは pwsh。"$TAG_NAME" 展開のために bash を明示する。
         run: gh release upload "$TAG_NAME" target/release/alt-ime-rs.exe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+      - name: Releaseを公開する
+        # ビルド・添付が完了したタイミングでdraftを解除し、公開とタグ生成を確定させる。
+        # Why ビルド失敗時もドラフトが残るだけで、資産なしの公開Releaseは生まれない。
+        shell: bash
+        run: gh release edit "$TAG_NAME" --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
