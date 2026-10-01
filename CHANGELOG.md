@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.0.0...v1.1.0) (2026-10-01)
+
+
+### 追加
+
+* アップデートのDL・差し替え・再起動を自動化 ([#15](https://github.com/j4rviscmd/alt-ime-rs/issues/15)) ([f98ca00](https://github.com/j4rviscmd/alt-ime-rs/commit/f98ca00a020b69d783841ad021d08c38a923461d))
+
 ## [1.0.0](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.0.0...v1.0.0) (2026-10-01)
 
 
