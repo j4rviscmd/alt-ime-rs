@@ -296,7 +296,7 @@ unsafe fn show_update_dialog(hwnd: HWND, trigger: update::Trigger, outcome: upda
     match outcome {
         update::Outcome::UpdateAvailable(latest) => {
             let msg = format!(
-                "新しいバージョンがあります。\n\n現在: v{}\n最新: {}\n\n自動で更新しますか？",
+                "新しいバージョンがあります。\n\n現在: v{}\n最新: {}\n\n更新しますか？",
                 update::APP_VERSION,
                 latest
             );
