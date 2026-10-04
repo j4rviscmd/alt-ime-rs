@@ -3,11 +3,12 @@
 # 仕組み:
 #   1. mainへのpushごとに release-please がConventional Commitsを解析し、
 #      Cargo.toml/CHANGELOG.md をバンプする Release PR を自動作成・自動更新する
-#   2. Release PR をマージすると、GitHub Release(draft) が自動作成される
-#   3. publishジョブがマージコミットを windows-latest でビルドして exe を添付し、
-#      完了後に Release を公開(draft解除)する
-#      Why draftで公開を遅らせる: ビルド中に「資産なしの公開Release」が
-#      /releases/latest へ現れる数分の窓を防ぐため。
+#   2. Release PR をマージすると、GitHub Release(タグ付き・即公開) が自動作成される
+#   3. publishジョブがマージコミットを windows-latest でビルドして exe を添付する
+#      Why draftにしない: draft Releaseは公開までタグを生成しないため、Release PRマージ時の
+#      同一実行が「未リリース」と誤認し、Release-As込みの降格PRを毎リリース作成する
+#      (googleapis/release-please-action#962)。exe添付までの数分間は資産なしで公開されるが、
+#      セルフアップデートはDL失敗時に手動導線へフォールバックするため影響は軽微。
 #
 # 前提(リポジトリ設定で一度だけ有効化):
 #   - Settings > Actions > General > Allow GitHub Actions to create and approve pull requests
@@ -49,25 +50,17 @@ jobs:
     runs-on: windows-latest
     steps:
       # チェックアウトはRelease PRのマージコミット(=Releaseのtarget_commitishと同一SHA)。
-      # Why refにタグを指定しない: draftなReleaseはタグがまだ生成されていないため失敗する。
+      # Why refにタグを指定しない: タグfetchのタイムラグに左右されないSHA素通しが最も確実なため。
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: exeをビルド
         run: cargo build --release
         # Why 環境変数での版指定が不要: Release PRがCargo.tomlをバンプ済みのため、
         # build.rsのCARGO_PKG_VERSIONフォールバックが正しい版を焼き込む
-      - name: exeをRelease(draft)へ添付
+      - name: exeをReleaseへ添付
         shell: bash
         # Note: windows-latest の既定シェルは pwsh。"$TAG_NAME" 展開のために bash を明示する。
         run: gh release upload "$TAG_NAME" target/release/alt-ime-rs.exe
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-      - name: Releaseを公開する
-        # ビルド・添付が完了したタイミングでdraftを解除し、公開とタグ生成を確定させる。
-        # Why ビルド失敗時もドラフトが残るだけで、資産なしの公開Releaseは生まれない。
-        shell: bash
-        run: gh release edit "$TAG_NAME" --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
