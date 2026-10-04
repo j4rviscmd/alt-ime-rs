@@ -5,7 +5,6 @@
     ".": {
       "release-type": "rust",
       "include-component-in-tag": false,
-      "draft": true,
       "changelog-sections": [
         { "type": "feat", "section": "追加" },
         { "type": "fix", "section": "修正" }

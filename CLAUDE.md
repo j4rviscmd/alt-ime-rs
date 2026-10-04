@@ -16,5 +16,5 @@
 
 - `release-please` による自動化(`.github/workflows/release-please.yml`)
   - mainにfeat/fixコミットがマージされるとRelease PR(バージョン バンプ+Cargo.toml+CHANGELOG.md)が自動作成される
-  - Release PRをマージするとGitHub Release(draft)が作成され、Actionsがexeをビルド・添付した後に公開する
+  - Release PRをマージするとGitHub Release(タグ付き・即公開)が作成され、Actionsがexeをビルドして添付する
   - 旧CalVer版利用者への案内としてsentinel(v9999.99.99)をLatest固定している(詳細はワークフロー内コメント)
