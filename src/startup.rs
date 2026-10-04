@@ -38,6 +38,36 @@ pub fn disable() -> bool {
     unsafe { delete_value() }
 }
 
+/// 登録パスの実行ファイルが存在しない(=自動起動の導線が壊れている)場合、現在のexeパスへ書き直す。
+/// Why: ユーザーがexeを移動・リネームするとRunキーの登録パスが実態と乖離し、OS起動時に
+///   黙って起動しなくなる。手動起動を機に壊れた登録だけを現在地へ修復する。
+/// Constraint: 値が存在しない場合は明示的な無効化の可能性があるため再登録しない。
+///   登録先のファイルが実在する場合(別フォルダのコピー試用等、登録自体は機能している)も触らない。
+pub fn repair_if_stale() {
+    let Some(raw) = (unsafe { read_value() }) else {
+        return;
+    };
+    let registered = exe_path_from_value(&String::from_utf16_lossy(&raw));
+    if std::path::Path::new(&registered).exists() {
+        return;
+    }
+    if let Ok(current) = std::env::current_exe() {
+        unsafe { write_value(&current.to_string_lossy()) };
+    }
+}
+
+/// Runキー値(コマンドラインとして解釈される)から実行ファイルのパス部分を取り出す。
+/// Why: write_value は引用符付きパスを書き込むが、レジストリを手書き編集されると引用符なし・
+///   引数付きの形式も取り得るため、先頭トークンを寛容に解釈する。
+fn exe_path_from_value(value: &str) -> String {
+    let s = value.trim_end_matches('\0').trim();
+    if let Some(rest) = s.strip_prefix('"') {
+        rest.split('"').next().unwrap_or_default().to_string()
+    } else {
+        s.split_whitespace().next().unwrap_or_default().to_string()
+    }
+}
+
 /// 指定アクセス権でRunキーを開く。
 unsafe fn open_key(sam: u32) -> Option<HKEY> {
     let subkey = wide(RUN_KEY);
@@ -128,4 +158,61 @@ unsafe fn delete_value() -> bool {
     RegCloseKey(hkey);
     // Why: 無効化操作の冪等性。既に未登録(ERROR_FILE_NOT_FOUND)なら目標状態に合致するため成功扱いにする。
     ret == 0 || ret == ERROR_FILE_NOT_FOUND
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exe_path_from_value;
+
+    // write_value が書く形式: 引用符付きパス+レジストリ値のnull終端
+    #[test]
+    fn parses_quoted_path_with_nul() {
+        assert_eq!(
+            exe_path_from_value("\"C:\\Apps\\alt-ime-rs.exe\"\u{0}"),
+            "C:\\Apps\\alt-ime-rs.exe"
+        );
+    }
+
+    // 引用符付きパス+引数: 閉じ引用符までをパスとして取り出す
+    #[test]
+    fn parses_quoted_path_with_args() {
+        assert_eq!(
+            exe_path_from_value("\"C:\\Apps\\alt-ime-rs.exe\" --option"),
+            "C:\\Apps\\alt-ime-rs.exe"
+        );
+    }
+
+    // 引用符なし(手書き編集時): 最初の空白までをパスとみなす(コマンドライン解釈と同じ曖昧性)
+    #[test]
+    fn parses_unquoted_path() {
+        assert_eq!(
+            exe_path_from_value("C:\\Apps\\alt-ime-rs.exe"),
+            "C:\\Apps\\alt-ime-rs.exe"
+        );
+    }
+
+    // 空文字・空白のみ: パスなしとして空文字を返す(呼び出し側は存在チェックで修復へ向かう)
+    #[test]
+    fn parses_empty_to_empty() {
+        assert_eq!(exe_path_from_value("\"\u{0}"), "");
+        assert_eq!(exe_path_from_value("   "), "");
+    }
+
+    // 引用符なし+引数(手書き編集時): 最初の空白までをパスとして切り捨てる
+    #[test]
+    fn parses_unquoted_path_with_args() {
+        assert_eq!(
+            exe_path_from_value("C:\\Apps\\alt-ime-rs.exe --option\u{0}"),
+            "C:\\Apps\\alt-ime-rs.exe"
+        );
+    }
+
+    // 閉じ引用符なし(手書き編集の壊れ方): 残り全体をパスとみなす(存在チェックfalse→修復へ向かう)
+    #[test]
+    fn parses_unclosed_quote_as_remainder() {
+        assert_eq!(
+            exe_path_from_value("\"C:\\Apps\\alt-ime-rs.exe"),
+            "C:\\Apps\\alt-ime-rs.exe"
+        );
+    }
 }
