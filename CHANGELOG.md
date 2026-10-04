@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.1.0...v1.2.0) (2026-10-04)
+
+
+### 追加
+
+* 自動起動登録の壊れたパスを起動時に自動修復する ([#19](https://github.com/j4rviscmd/alt-ime-rs/issues/19)) ([f4d8cce](https://github.com/j4rviscmd/alt-ime-rs/commit/f4d8cce7f7c684232b3bf9ad8b8c2ae2caba663e))
+
 ## [1.1.0](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.0.0...v1.1.0) (2026-10-01)
 
 
