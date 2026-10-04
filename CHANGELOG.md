@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.2.0...v1.2.1) (2026-10-04)
+
+
+### 修正
+
+* 更新確認ダイアログの文言を「更新しますか？」に修正 ([#21](https://github.com/j4rviscmd/alt-ime-rs/issues/21)) ([aa5ca01](https://github.com/j4rviscmd/alt-ime-rs/commit/aa5ca01bed81401bcfa1387eb562ffd4f8dfd6e9))
+
 ## [1.2.0](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.1.0...v1.2.0) (2026-10-04)
 
 
