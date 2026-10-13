@@ -28,6 +28,12 @@ windows-sys = { version = "0.59", features = [
 [build-dependencies]
 winres = "0.1"
 
+# テスト専用: フック系staticsの排他ロック(hook::TEST_LOCK)。stdのMutexと違い
+# ロック取得でpoisoningのResultを返さず、テストのロック取得が1行で書ける。
+# dev-dependencies はリリースexeへリンクされないためバイナリサイズには影響しない。
+[dev-dependencies]
+parking_lot = "0.12"
+
 # 軽量な単一exe生成を狙う最適化
 # Constraint: README要件「軽量・高速」「exeでビルド&配布」より、配布バイナリの最小化を最優先する。各フラグはそのための意図的な組合せ。
 [profile.release]

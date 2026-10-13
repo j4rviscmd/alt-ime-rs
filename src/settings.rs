@@ -13,34 +13,39 @@ use crate::wide;
 // 設定保存先のキーと値の名前
 const SETTINGS_KEY: &str = "Software\\alt-ime-rs";
 const VALUE_UPDATE_CHECK: &str = "UpdateCheckOnStartup";
+const VALUE_SIMULT_ALT_PASSTHROUGH: &str = "SimultaneousAltPassthrough";
 
-/// 起動時のアップデート確認が有効か。値が無い/読めない場合は有効(既定)。
-/// Why: 既存ユーザーの挙動(起動時に確認する)を変えないため、未設定は ON 扱い。
-pub fn update_check_on_startup() -> bool {
+/// 設定値(REG_DWORD)を読み取る。値が無い/読めない場合は既定値を返す。
+/// Why: 設定が2値になり読み取り処理が同一になったため共通化。REG_DWORD は4バイト固定で
+///   バッファ不足(ERROR_MORE_DATA)が起こり得ないため、可変長 REG_SZ をサイズ取得→
+///   読み取りの2段階で扱う startup.rs と違い1回の読み取りで済む。
+fn read_bool(name: &str, default: bool) -> bool {
     unsafe {
         let Some(hkey) = open_key() else {
-            return true;
+            return default;
         };
         let mut value: u32 = 0;
-        // Why: REG_DWORD は4バイト固定でバッファ不足(ERROR_MORE_DATA)が起こり得ないため、
-        //   可変長 REG_SZ をサイズ取得→読み取りの2段階で扱う startup.rs と違い1回の読み取りで済む。
         let mut size: u32 = 4;
         let rc = RegQueryValueExW(
             hkey,
-            wide(VALUE_UPDATE_CHECK).as_ptr(),
+            wide(name).as_ptr(),
             core::ptr::null(),
             core::ptr::null_mut(),
             &mut value as *mut u32 as *mut u8,
             &mut size,
         );
         RegCloseKey(hkey);
-        // ERROR_SUCCESS(0) 以外は値なし/読み取り失敗 → 既定値(有効)
-        rc != 0 || value != 0
+        // ERROR_SUCCESS(0) 以外は値なし/読み取り失敗 → 既定値
+        if rc != 0 {
+            default
+        } else {
+            value != 0
+        }
     }
 }
 
-/// 起動時のアップデート確認の有効/無効を保存する。
-pub fn set_update_check_on_startup(enabled: bool) {
+/// 設定値(REG_DWORD)を書き込む。失敗時は何もしない。
+fn write_bool(name: &str, enabled: bool) {
     unsafe {
         let Some(hkey) = open_key() else {
             return;
@@ -48,7 +53,7 @@ pub fn set_update_check_on_startup(enabled: bool) {
         let value: u32 = u32::from(enabled);
         let rc = RegSetValueExW(
             hkey,
-            wide(VALUE_UPDATE_CHECK).as_ptr(),
+            wide(name).as_ptr(),
             0,
             REG_DWORD,
             &value as *const u32 as *const u8,
@@ -57,6 +62,29 @@ pub fn set_update_check_on_startup(enabled: bool) {
         RegCloseKey(hkey);
         debug_assert_eq!(rc, 0, "設定の保存に失敗: rc={}", rc);
     }
+}
+
+/// 起動時のアップデート確認が有効か。値が無い/読めない場合は有効(既定)。
+/// Why: 既存ユーザーの挙動(起動時に確認する)を変えないため、未設定は ON 扱い。
+pub fn update_check_on_startup() -> bool {
+    read_bool(VALUE_UPDATE_CHECK, true)
+}
+
+/// 起動時のアップデート確認の有効/無効を保存する。
+pub fn set_update_check_on_startup(enabled: bool) {
+    write_bool(VALUE_UPDATE_CHECK, enabled);
+}
+
+/// 「Alt同時押しでIME切替しない」が有効か。値が無い/読めない場合は有効(既定)。
+/// Why: 同時押しでのIME切替は想定ユースケース外(片方のAlt空打ちでの切替が本来の用途)で、
+///   有効時はExcel/メモ帳等のリボン聚焦抑制の恩恵も得られるため、未設定は ON 扱い。
+pub fn simultaneous_alt_passthrough() -> bool {
+    read_bool(VALUE_SIMULT_ALT_PASSTHROUGH, true)
+}
+
+/// 「Alt同時押しでIME切替しない」の有効/無効を保存する。
+pub fn set_simultaneous_alt_passthrough(enabled: bool) {
+    write_bool(VALUE_SIMULT_ALT_PASSTHROUGH, enabled);
 }
 
 /// 設定キーを開く(無ければ作成する)。失敗時はNone。
@@ -80,11 +108,11 @@ unsafe fn open_key() -> Option<HKEY> {
 
 /// 値を削除する(テストで既定値に戻すために使用)。
 #[cfg(test)]
-pub(crate) fn reset_update_check_on_startup() {
+pub(crate) fn reset_value(name: &str) {
     use windows_sys::Win32::System::Registry::RegDeleteValueW;
     unsafe {
         if let Some(hkey) = open_key() {
-            RegDeleteValueW(hkey, wide(VALUE_UPDATE_CHECK).as_ptr());
+            RegDeleteValueW(hkey, wide(name).as_ptr());
             RegCloseKey(hkey);
         }
     }
@@ -101,7 +129,7 @@ mod tests {
         // Why: 開発マシンで当該設定を変更済みでも cargo test が黙ってリセットしないようにするため。
         let saved = update_check_on_startup();
 
-        reset_update_check_on_startup();
+        reset_value(VALUE_UPDATE_CHECK);
         assert!(update_check_on_startup(), "未設定時は既定で有効");
 
         set_update_check_on_startup(false);
@@ -110,9 +138,32 @@ mod tests {
         set_update_check_on_startup(true);
         assert!(update_check_on_startup());
 
-        reset_update_check_on_startup();
+        reset_value(VALUE_UPDATE_CHECK);
         assert!(update_check_on_startup(), "削除後は既定に戻る");
 
         set_update_check_on_startup(saved);
+    }
+
+    /// 「Alt同時押しでIME切替しない」の保存→読み取り往復と、未設定時の既定値(有効)を確認する。
+    #[test]
+    fn simultaneous_alt_passthrough_roundtrip_and_default() {
+        // 実レジストリを扱うため事前値を保存し、テスト後に復元する(上記テストと同一理由)。
+        // tray.rs のトグルテストも同じレジストリ値とhook::PASSTHROUGHを触るため排他する
+        let _g = crate::hook::TEST_LOCK.lock();
+        let saved = simultaneous_alt_passthrough();
+
+        reset_value(VALUE_SIMULT_ALT_PASSTHROUGH);
+        assert!(simultaneous_alt_passthrough(), "未設定時は既定で有効");
+
+        set_simultaneous_alt_passthrough(false);
+        assert!(!simultaneous_alt_passthrough());
+
+        set_simultaneous_alt_passthrough(true);
+        assert!(simultaneous_alt_passthrough());
+
+        reset_value(VALUE_SIMULT_ALT_PASSTHROUGH);
+        assert!(simultaneous_alt_passthrough(), "削除後は既定に戻る");
+
+        set_simultaneous_alt_passthrough(saved);
     }
 }

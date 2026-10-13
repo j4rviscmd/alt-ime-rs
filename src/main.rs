@@ -16,6 +16,7 @@ mod startup;
 mod terminal;
 mod tray;
 mod update;
+mod xamlmenu;
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG};
 
@@ -73,6 +74,12 @@ fn main() {
         //   書き込み1回で即座に終わるためメッセージループ開始を遅延させない。明示的に
         //   無効化されている(値がない)場合は再登録しない。
         startup::repair_if_stale();
+
+        // 設定の「Alt同時押しでIME切替しない」をフックへ反映(未設定時は既定のON)
+        // Why: フックコールバックのホットパスでレジストリを読ませないため、起動時に
+        //   一度だけ読んでプロセス内フラグ(hook::set_passthrough)へ反映する。
+        //   以降の切替はトレイメニュー経由でフラグとレジストリの両方を更新する。
+        hook::set_passthrough(settings::simultaneous_alt_passthrough());
 
         // 起動時のアップデート確認を非同期で開始(設定で無効化されている場合はスキップ)
         // Why: トレイウィンドウ生成後・メッセージループ直前に起動する。通信は別スレッドで

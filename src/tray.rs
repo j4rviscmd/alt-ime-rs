@@ -2,8 +2,9 @@
 //!
 //! 不可視のメッセージ専用ウィンドウを作成し、Shell_NotifyIconW で
 //! トレイアイコンを登録する。右/左クリックでポップアップメニューを表示し、
-//! 「一時無効」の切替、「自動起動」の切替、「実行ファイルの場所を開く」、「アップデートの確認」、
-//! 「起動時にアップデートを確認」の切替、「終了」を提供する。
+//! 「一時無効」の切替、「Alt同時押しでIME切替しない」の切替、「自動起動」の切替、
+//! 「実行ファイルの場所を開く」、「アップデートの確認」、「起動時にアップデートを確認」の切替、
+//! 「終了」を提供する。
 
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -33,6 +34,8 @@ const IDM_CHECKUPDATE: usize = 1004;
 const IDM_TEMP_DISABLE: usize = 1005;
 // Constraint: IDM_TEMP_DISABLE(1005) と衝突しない値。1006 を割り当てる。
 const IDM_UPDATE_ON_STARTUP: usize = 1006;
+// Constraint: IDM_UPDATE_ON_STARTUP(1006) と衝突しない値。1007 を割り当てる。
+const IDM_SIMULT_ALT_PASSTHROUGH: usize = 1007;
 
 /// windows_sys 0.59 が公開していない MAKEINTRESOURCEW マクロ相当。
 /// 整数リソースID を名前ではなく番号として解釈させるため、整数を LPCWSTR へキャストする。
@@ -145,6 +148,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: 
                     toggle_temp_disable();
                     0
                 }
+                IDM_SIMULT_ALT_PASSTHROUGH => {
+                    toggle_simult_alt_passthrough();
+                    0
+                }
                 IDM_AUTOSTART => {
                     toggle_autostart();
                     0
@@ -198,6 +205,21 @@ unsafe fn show_menu(hwnd: HWND) {
         MF_STRING | temp_disable_flag,
         IDM_TEMP_DISABLE,
         wide("一時無効").as_ptr(),
+    );
+    // 「Alt同時押しでIME切替しない」はチェック=有効。既定は有効(未設定時)。
+    // Why: 同時押しでIMEが二重に切替わるのを防ぐ導線。有効中は同時押しのKeyUp時F13注入を
+    //   古典Win32系(Office等)に限定し、XAMLメニューバー系(Win11メモ帳等)では素の挙動に
+    //   任せる(実機計測に基づく切り替え。詳細はhook.rsとxamlmenu.rsのdoc参照)。
+    let simult_alt_passthrough_flag = if hook::is_passthrough() {
+        MF_CHECKED
+    } else {
+        MF_UNCHECKED
+    };
+    AppendMenuW(
+        menu,
+        MF_STRING | simult_alt_passthrough_flag,
+        IDM_SIMULT_ALT_PASSTHROUGH,
+        wide("Alt同時押しでIME切替しない").as_ptr(),
     );
     let autostart_flag = if startup::is_enabled() {
         MF_CHECKED
@@ -264,6 +286,14 @@ unsafe fn toggle_autostart() {
     } else {
         startup::enable();
     }
+}
+
+/// 「Alt同時押しでIME切替しない」の有効/無効を切替える(同名メニュー項目)。
+/// フックの即時反映(hook::set_passthrough)と永続化(settings)の両方を行う。
+unsafe fn toggle_simult_alt_passthrough() {
+    let on = !hook::is_passthrough();
+    hook::set_passthrough(on);
+    settings::set_simultaneous_alt_passthrough(on);
 }
 
 /// 起動時のアップデート確認の有効/無効を切替える(メニュー項目「起動時にアップデートを確認」)。
@@ -414,4 +444,43 @@ unsafe fn set_tip(tip: &mut [u16], s: &str) {
         tip[i] = c;
     }
     // tip は zeroed 初期化されているため、未設定部分(末尾含む)は 0 のままで null終端される
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hook;
+    use crate::settings;
+
+    /// 「Alt同時押しでIME切替しない」トグルで、フックの即時反映フラグとレジストリの両方が
+    /// 反転し、もう一度トグルで元に戻ることを確認する。
+    #[test]
+    fn toggle_simult_alt_passthrough_flips_hook_and_persists() {
+        // hook系staticsとレジストリの当該値を扱うため、hookのテストと排他する
+        let _g = hook::TEST_LOCK.lock();
+        // 実レジストリを扱うため事前値を保存し、テスト後に復元する(settingsテストと同一理由)。
+        let saved = settings::simultaneous_alt_passthrough();
+        hook::set_passthrough(false);
+
+        unsafe { toggle_simult_alt_passthrough() };
+        assert!(hook::is_passthrough(), "トグルでフックのフラグが有効になる");
+        assert!(
+            settings::simultaneous_alt_passthrough(),
+            "レジストリへも有効が保存される"
+        );
+
+        unsafe { toggle_simult_alt_passthrough() };
+        assert!(
+            !hook::is_passthrough(),
+            "再トグルでフックのフラグが無効に戻る"
+        );
+        assert!(
+            !settings::simultaneous_alt_passthrough(),
+            "レジストリも無効に戻る"
+        );
+
+        // 元の状態へ復元する
+        hook::set_passthrough(saved);
+        settings::set_simultaneous_alt_passthrough(saved);
+    }
 }
