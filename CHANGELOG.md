@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.2.1...v1.3.0) (2026-10-13)
+
+
+### 追加
+
+* 左右Alt同時押しでIME切替しないオプションを追加 ([#23](https://github.com/j4rviscmd/alt-ime-rs/issues/23)) ([6d7dbf1](https://github.com/j4rviscmd/alt-ime-rs/commit/6d7dbf16d72810b9d781ccddb3805d3d9c06c55e))
+
 ## [1.2.1](https://github.com/j4rviscmd/alt-ime-rs/compare/v1.2.0...v1.2.1) (2026-10-04)
 
 
