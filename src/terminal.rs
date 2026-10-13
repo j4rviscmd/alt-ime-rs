@@ -59,7 +59,8 @@ pub fn focused_is_terminal() -> bool {
 /// フォーカスのルート(トップレベル)ウィンドウを取得する。特定不能ならnull。
 /// Why GA_ROOTか: F13の配送先は入力フォーカスを持つ子ウィンドウ(Windows Terminalでは
 ///   XAMLアイランド配下)で、クラス判定はトップレベルウィンドウで行う必要があるため。
-unsafe fn focus_root() -> HWND {
+/// pub(crate): xamlmenu.rs もフォアグラウンド判定に使うためcrate内共有とする。
+pub(crate) unsafe fn focus_root() -> HWND {
     let fg = GetForegroundWindow();
     if fg.is_null() {
         return fg;
@@ -129,7 +130,8 @@ unsafe fn process_is_terminal(pid: u32) -> bool {
 /// ASCIIパターン(&str)とUTF-16文字列の大文字小文字無視比較。
 /// Why 独自実装か: Stringへ変換するとAlt押下のたびにヒープ確保が走るため確保なしで済ませる。
 ///   リストはすべてASCII前提で、非ASCII文字(>0xFF)は不一致として扱う。
-fn eq_ignore_case(pattern: &str, text: &[u16]) -> bool {
+/// pub(crate): xamlmenu.rs もクラス名比較に使うためcrate内共有とする。
+pub(crate) fn eq_ignore_case(pattern: &str, text: &[u16]) -> bool {
     let pat = pattern.as_bytes();
     if pat.len() != text.len() {
         return false;
