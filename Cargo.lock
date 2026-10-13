@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "alt-ime-rs"
-version = "1.2.1"
+version = "1.3.0"
 dependencies = [
  "parking_lot",
  "windows-sys",
