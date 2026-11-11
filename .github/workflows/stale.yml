@@ -1,0 +1,51 @@
+# 放置issueの自動クローズ: 60日間活動がないissueにstaleラベルと警告コメントを付け、
+# さらに14日間活動がなければnot plannedでクローズする。コメントや編集があれば
+# `stale`は外れ、60日のカウントはそこで再スタートする。
+name: stale
+
+on:
+  schedule:
+    - cron: '17 16 * * *' # 毎日01:17 JST
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Why top-level read-only: 既定トークンを最小権限に保つ。書き込み権限は下のjobで
+# 個別に宣言する。
+permissions:
+  contents: read
+
+jobs:
+  stale:
+    name: 放置issueのクローズ
+    runs-on: ubuntu-latest
+    # Why issues write: ラベル付与・コメント・クローズに必要。下でPRは対象外に
+    # しているためpull-requestsスコープは不要。
+    permissions:
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - name: 放置issueのマークとクローズ
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          # issueのみを対象にし、PRには一切触れない
+          days-before-pr-stale: '-1'
+          days-before-pr-close: '-1'
+          days-before-issue-stale: '60'
+          days-before-issue-close: '14'
+          stale-issue-label: 'stale'
+          # 免除: `pinned`/`security`ラベル付き、またはassigneeがいるissue
+          exempt-issue-labels: 'pinned,security'
+          exempt-all-assignees: 'true'
+          close-issue-reason: 'not_planned'
+          stale-issue-message: |-
+            このissueは60日間活動がなかったため、staleとしてマークされました。
+            さらに14日間活動がない場合、自動的にクローズされます。
+
+            このissueがまだ必要であれば、コメントを残してください。コメントがあるとクローズされません。メンテナーは`pinned`または`security`ラベルを付けることで自動クローズの対象外にできます。
+          close-issue-message: |-
+            このissueは、staleのマーク後14日間活動がなかったため自動的にクローズされました。
+
+            まだ必要であれば、最新の情報を添えて新しいissueを作成してください。
